@@ -5,3 +5,5 @@ coverage.out
 /tmp/imagecompressor/
 *.dct
 .env
+Goalplan.md
+context.md

@@ -1,6 +1,8 @@
 # Interview Prep — DCTPress Image Compression Engine
 
-Everything you need to answer interview questions about this project at any depth: internship, new-grad, SDE-2, or staff level. Organised from "explain it to a non-engineer" up to "justify every bit of the wire format".
+Everything you need to answer interview questions about this project at any depth: internship, new-grad, SDE-2, or staff level. Organised from "explain it to a non-engineer" up to "justify every bit of the wire format".  
+
+### If You Are Using My Project For Interview Purpose DO Not Just Read This DOCS Pleaes Trace And Learn Each steps in Algrithm implementation andn then read this Out .
 
 ---
 
