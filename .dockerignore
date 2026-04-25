@@ -1,0 +1,28 @@
+# Build artifacts
+bin/
+*.exe
+
+# Tests (not needed in image)
+test/
+*_test.go
+coverage.out
+
+# Development tooling
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+Makefile
+
+# Docs
+*.md
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Temp / logs
+tmp/
+*.tmp
+*.log
