@@ -1,0 +1,7 @@
+bin/
+tmp/
+*.out
+coverage.out
+/tmp/imagecompressor/
+*.dct
+.env

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DCTPress</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <p id="loading-text">Processing…</p>
+    <p id="loading-sub"></p>
+  </div>
+
+  <header>
+    <h1>DCT<span class="accent">Press</span></h1>
+    <button id="theme-toggle" onclick="toggleTheme()">Light Mode</button>
+  </header>
+
+  <main>
+    <!-- Upload + Settings -->
+    <div class="row">
+      <section class="card" id="upload-card">
+        <h2>Upload Image</h2>
+        <div id="drop-zone"
+             ondragover="onDragOver(event)"
+             ondragleave="onDragLeave(event)"
+             ondrop="onDrop(event)">
+          <p>Drag &amp; drop an image here</p>
+          <p>or</p>
+          <label class="btn" for="file-input">Browse Files</label>
+          <input type="file" id="file-input"
+                 accept=".png,.jpg,.jpeg,.webp,.bmp,.tiff"
+                 onchange="onFileSelected(event)" />
+        </div>
+        <p id="upload-status" class="status"></p>
+        <div id="progress-container" style="display:none">
+          <div class="progress-bar"><div id="progress-fill"></div></div>
+          <p id="progress-text"></p>
+        </div>
+      </section>
+
+      <section class="card" id="settings-card">
+        <h2>Settings</h2>
+
+        <label for="quality-slider">Quality: <strong id="quality-label">75</strong></label>
+        <input type="range" id="quality-slider" min="1" max="100" value="75"
+               oninput="document.getElementById('quality-label').textContent=this.value" />
+        <div class="quality-hints"><span>Low</span><span>Medium</span><span>High</span></div>
+
+        <label for="subsampling-select">Chroma Subsampling</label>
+        <select id="subsampling-select">
+          <option value="4:2:0" selected>4:2:0 (most compression)</option>
+          <option value="4:2:2">4:2:2</option>
+          <option value="4:4:4">4:4:4 (best quality)</option>
+        </select>
+
+        <div class="btn-row">
+          <button class="btn primary" onclick="compressImage()" id="compress-btn" disabled>Compress</button>
+          <button class="btn secondary" onclick="runBenchmark()" id="benchmark-btn" disabled>Run Benchmark</button>
+        </div>
+
+        <!-- Advanced Options -->
+        <details class="advanced-details">
+          <summary>Advanced Options</summary>
+          <div class="advanced-body">
+            <label for="amplify-slider">
+              Heatmap Amplification: <strong id="amplify-label">5</strong>×
+            </label>
+            <input type="range" id="amplify-slider" min="1" max="20" value="5"
+                   oninput="document.getElementById('amplify-label').textContent=this.value; redrawHeatmap()" />
+            <p class="help-text">Multiplies pixel differences so subtle artifacts become visible.</p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <!-- 3-Panel Comparison -->
+    <section class="card" id="comparison-card" style="display:none">
+      <h2>Comparison</h2>
+      <div class="comparison-grid three-col">
+
+        <div class="image-panel">
+          <p class="panel-label">Original</p>
+          <img id="original-preview" alt="Original" />
+          <p id="original-info" class="info"></p>
+        </div>
+
+        <div class="image-panel">
+          <p class="panel-label">Difference Heatmap</p>
+          <div id="heatmap-wrap">
+            <p id="heatmap-placeholder" class="placeholder-text">
+              Compress an image to see where quality is lost
+            </p>
+            <canvas id="heatmap-canvas" style="display:none"></canvas>
+          </div>
+          <p id="heatmap-legend" class="heatmap-legend" style="display:none">
+            <span class="dot green-dot"></span>Low &nbsp;
+            <span class="dot yellow-dot"></span>Medium &nbsp;
+            <span class="dot red-dot"></span>High
+          </p>
+        </div>
+
+        <div class="image-panel">
+          <p class="panel-label">Decompressed (DCTPress)</p>
+          <div id="compressed-placeholder-wrap">
+            <p class="placeholder-text">Compress to see the result</p>
+          </div>
+          <img id="compressed-preview" alt="Compressed (DCT)" style="display:none" />
+          <p id="compressed-info" class="info"></p>
+        </div>
+      </div>
+
+      <!-- Metric Cards -->
+      <div id="metrics-section" style="display:none">
+        <div class="section-divider"></div>
+        <div class="metrics-grid" id="metrics-grid"></div>
+        <div class="dl-section">
+          <p class="dl-heading">Download Result</p>
+          <div class="dl-grid">
+            <button class="dl-card dl-card--primary" onclick="downloadImage('dct')">
+              <span class="dl-icon" id="dl-icon-dct"></span>
+              <div class="dl-meta">
+                <strong>DCT Binary</strong>
+                <small id="dl-size-dct">exact compressed size</small>
+                <span class="dl-badge">Your Format</span>
+              </div>
+            </button>
+            <button class="dl-card" onclick="downloadImage('jpeg')">
+              <span class="dl-icon" id="dl-icon-jpeg"></span>
+              <div class="dl-meta">
+                <strong>JPEG</strong>
+                <small>Universal · opens anywhere</small>
+                <span class="dl-badge">Re-encoded</span>
+              </div>
+            </button>
+            <button class="dl-card" onclick="downloadImage('webp')">
+              <span class="dl-icon" id="dl-icon-webp"></span>
+              <div class="dl-meta">
+                <strong>WebP</strong>
+                <small>Modern · smallest output</small>
+                <span class="dl-badge">Client-side</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Benchmark Results -->
+    <section class="card" id="benchmark-card" style="display:none">
+      <div class="benchmark-header">
+        <h2>Benchmark Results</h2>
+        <button class="btn secondary btn-sm" onclick="downloadCSV()" id="csv-btn">CSV Report</button>
+      </div>
+
+      <!-- Hero Stats -->
+      <div class="bm-hero" id="bm-hero"></div>
+
+      <!-- Premium Table -->
+      <div class="table-wrapper" style="margin-top:1.2rem">
+        <table id="benchmark-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Language</th>
+              <th>Size ↓</th>
+              <th>Ratio ↑</th>
+              <th>PSNR ↑</th>
+              <th>SSIM ↑</th>
+              <th>Encode ↓</th>
+            </tr>
+          </thead>
+          <tbody id="benchmark-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Insights -->
+      <div class="bm-insights" id="bm-insights"></div>
+    </section>
+  </main>
+
+  <div id="shortcuts-hint">Ctrl+U Upload &nbsp;|&nbsp; Ctrl+Enter Compress &nbsp;|&nbsp; Ctrl+S Download</div>
+  <script src="app.js"></script>
+</body>
+</html>
