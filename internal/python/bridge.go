@@ -1,5 +1,5 @@
-// Package python provides a bridge for executing Python benchmark scripts
-// as subprocesses and parsing their JSON output into BenchmarkResult values.
+// Package python runs the reference JPEG encoders (Pillow and OpenCV) as
+// subprocesses, so the benchmark can compare this codec against them.
 package python
 
 import (
@@ -7,109 +7,159 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"imagecompressor-dct/internal/models"
+	"image"
+	"image/png"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 )
 
+// scriptTimeout bounds one script run. Encoding takes milliseconds; nearly
+// all of the budget is for interpreter and library start-up.
 const scriptTimeout = 60 * time.Second
 
-// Bridge executes Python compression scripts and parses their results.
+// ScriptsDirEnv names the environment variable that overrides where the
+// benchmark scripts are looked up.
+const ScriptsDirEnv = "IMAGECOMPRESSOR_SCRIPTS_DIR"
+
+// Scripts shipped in the scripts directory.
+const (
+	ScriptPIL    = "compress_pil.py"
+	ScriptOpenCV = "compress_opencv.py"
+)
+
+// Result is what one script run produced.
+type Result struct {
+	Method         string
+	Language       string
+	CompressedSize int
+	EncodingTime   time.Duration
+	DecodingTime   time.Duration
+
+	// Decoded is the image after a JPEG encode/decode round trip. The
+	// scripts hand it back losslessly so that quality metrics for every
+	// codec are computed by the same Go code.
+	Decoded image.Image
+}
+
+// Bridge locates the Python interpreter and the benchmark scripts.
 type Bridge struct {
-	pythonExecutable string
-	scriptsDirectory string
+	interpreter string // empty when no interpreter was found
+	scriptsDir  string
 }
 
-// NewBridge creates a Bridge, auto-detecting the Python executable.
+// NewBridge looks up the interpreter and scripts directory once.
 func NewBridge() *Bridge {
-	return &Bridge{
-		pythonExecutable: detectPython(),
-		scriptsDirectory: resolveScriptsDirectory(),
+	name := "python3"
+	if runtime.GOOS == "windows" {
+		name = "python"
 	}
+	interpreter, err := exec.LookPath(name)
+	if err != nil {
+		interpreter = ""
+	}
+	return &Bridge{interpreter: interpreter, scriptsDir: findScriptsDir()}
 }
 
-// IsAvailable returns true if a usable Python interpreter was found.
-func (bridge *Bridge) IsAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// IsAvailable reports whether a Python interpreter was found. Whether the
+// libraries a script needs are installed only shows when it runs.
+func (b *Bridge) IsAvailable() bool {
+	return b.interpreter != ""
+}
+
+// Run compresses the image at inputPath with the named script at the given
+// JPEG quality. Cancelling ctx kills the subprocess.
+func (b *Bridge) Run(ctx context.Context, script, inputPath string, quality int) (*Result, error) {
+	if !b.IsAvailable() {
+		return nil, fmt.Errorf("python interpreter not found")
+	}
+
+	// Each run gets a private directory, so concurrent benchmarks never
+	// write to the same files.
+	workDir, err := os.MkdirTemp("", "imgcomp-py-")
+	if err != nil {
+		return nil, fmt.Errorf("create work dir: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
+	jpegPath := filepath.Join(workDir, "out.jpg")
+	decodedPath := filepath.Join(workDir, "decoded.png")
+
+	ctx, cancel := context.WithTimeout(ctx, scriptTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, bridge.pythonExecutable, "--version").Run()
-	return err == nil
-}
 
-// RunPILBenchmark compresses imagePath with Pillow and returns metrics.
-func (bridge *Bridge) RunPILBenchmark(imagePath string, quality int) (models.BenchmarkResult, error) {
-	return bridge.runScript("compress_pil.py", imagePath, quality)
-}
-
-// RunOpenCVBenchmark compresses imagePath with OpenCV and returns metrics.
-func (bridge *Bridge) RunOpenCVBenchmark(imagePath string, quality int) (models.BenchmarkResult, error) {
-	return bridge.runScript("compress_opencv.py", imagePath, quality)
-}
-
-// runScript executes a named Python script with the given arguments and
-// parses its stdout as a JSON BenchmarkResult.
-func (bridge *Bridge) runScript(scriptName, imagePath string, quality int) (models.BenchmarkResult, error) {
-	scriptPath := filepath.Join(bridge.scriptsDirectory, scriptName)
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx,
-		bridge.pythonExecutable,
-		scriptPath,
-		"--input", imagePath,
-		"--quality", fmt.Sprintf("%d", quality),
-		"--output-json",
+	cmd := exec.CommandContext(ctx, b.interpreter,
+		filepath.Join(b.scriptsDir, script),
+		"--input", inputPath,
+		"--quality", strconv.Itoa(quality),
+		"--jpeg", jpegPath,
+		"--decoded", decodedPath,
 	)
-
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
 	if err := cmd.Run(); err != nil {
-		return models.BenchmarkResult{}, fmt.Errorf("script %q failed: %w\nstderr: %s", scriptName, err, stderr.String())
-	}
-	outputBytes := stdout.Bytes()
-
-	var rawResult struct {
-		Method           string  `json:"method"`
-		Language         string  `json:"language"`
-		CompressedSize   int     `json:"compressed_size"`
-		CompressionRatio float64 `json:"compression_ratio"`
-		EncodingTimeMS   float64 `json:"encoding_time_ms"`
-		DecodingTimeMS   float64 `json:"decoding_time_ms"`
-		PSNR             float64 `json:"psnr"`
-		SSIM             float64 `json:"ssim"`
+		return nil, fmt.Errorf("%s: %w: %s", script, err, bytes.TrimSpace(stderr.Bytes()))
 	}
 
-	if err := json.Unmarshal(outputBytes, &rawResult); err != nil {
-		return models.BenchmarkResult{}, fmt.Errorf("failed to parse output from %q: %w", scriptName, err)
+	var report struct {
+		Method         string  `json:"method"`
+		Language       string  `json:"language"`
+		CompressedSize int     `json:"compressed_size"`
+		EncodingTimeMS float64 `json:"encoding_time_ms"`
+		DecodingTimeMS float64 `json:"decoding_time_ms"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		return nil, fmt.Errorf("%s: parse output: %w", script, err)
 	}
 
-	return models.BenchmarkResult{
-		Method:           rawResult.Method,
-		Language:         rawResult.Language,
-		CompressedSize:   rawResult.CompressedSize,
-		CompressionRatio: rawResult.CompressionRatio,
-		EncodingTime:     time.Duration(rawResult.EncodingTimeMS * float64(time.Millisecond)),
-		DecodingTime:     time.Duration(rawResult.DecodingTimeMS * float64(time.Millisecond)),
-		PSNR:             rawResult.PSNR,
-		SSIM:             rawResult.SSIM,
+	decoded, err := readPNG(decodedPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read decoded image: %w", script, err)
+	}
+
+	return &Result{
+		Method:         report.Method,
+		Language:       report.Language,
+		CompressedSize: report.CompressedSize,
+		EncodingTime:   time.Duration(report.EncodingTimeMS * float64(time.Millisecond)),
+		DecodingTime:   time.Duration(report.DecodingTimeMS * float64(time.Millisecond)),
+		Decoded:        decoded,
 	}, nil
 }
 
-// detectPython returns "python3" on Unix or "python" on Windows.
-func detectPython() string {
-	if runtime.GOOS == "windows" {
-		return "python"
+func readPNG(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	return "python3"
+	defer f.Close()
+	return png.Decode(f)
 }
 
-// resolveScriptsDirectory returns the path to the Python scripts directory
-// relative to the project root (works when running from project root or bin/).
-func resolveScriptsDirectory() string {
-	return filepath.Join("internal", "python", "scripts")
+// findScriptsDir returns the first existing candidate: the directory named
+// by ScriptsDirEnv, the in-repo location relative to the working directory
+// (go run, tests, the Docker image), then the same location next to the
+// executable.
+func findScriptsDir() string {
+	relative := filepath.Join("internal", "python", "scripts")
+
+	candidates := []string{os.Getenv(ScriptsDirEnv), relative}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(filepath.Dir(exe), relative),
+			filepath.Join(filepath.Dir(exe), "..", relative))
+	}
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return relative
 }

@@ -1,40 +1,37 @@
-// Package models defines shared domain types used across the compression pipeline.
+// Package models defines the data types shared between the codec, the
+// services and the HTTP layer.
 package models
 
 import "time"
 
-// CompressionResult holds the output of a single compression operation.
+// CompressionResult is the output of one encode.
 type CompressionResult struct {
-	Data             []byte
-	OriginalSize     int
-	CompressedSize   int
-	CompressionRatio float64
+	Data             []byte  // the .dct file contents
+	OriginalSize     int     // size as uncompressed 24-bit RGB, in bytes
+	CompressedSize   int     // len(Data)
+	CompressionRatio float64 // OriginalSize / CompressedSize
 	Width            int
 	Height           int
 	Quality          int
 }
 
-// BenchmarkResult holds metrics for one compression method in a benchmark run.
+// BenchmarkResult holds the measurements for one codec in a benchmark run.
+//
+// It is serialized as-is by the benchmark endpoint, so the JSON keys are the
+// Go field names and the two durations are in nanoseconds. The web UI
+// depends on that shape.
 type BenchmarkResult struct {
 	Method           string
 	Language         string
 	CompressedSize   int
-	CompressionRatio float64
+	CompressionRatio float64 // against uncompressed 24-bit RGB
 	EncodingTime     time.Duration
 	DecodingTime     time.Duration
 	PSNR             float64
 	SSIM             float64
-	MemoryMB         float64
 }
 
-// BenchmarkReport aggregates results from all methods for a single image.
-type BenchmarkReport struct {
-	OriginalSize int
-	Quality      int
-	Results      []BenchmarkResult
-}
-
-// ImageMetadata describes an uploaded image before compression.
+// ImageMetadata describes an uploaded image.
 type ImageMetadata struct {
 	ID        string `json:"id"`
 	Format    string `json:"format"`

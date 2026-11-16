@@ -1,7 +1,8 @@
 bin/
 tmp/
 *.out
-coverage.out
-/tmp/imagecompressor/
+coverage.html
 *.dct
 .env
+.vscode/
+.idea/

@@ -1,28 +1,34 @@
 package handlers
 
 import (
-	"context"
 	"net/http"
 	"os/exec"
+	"sync"
 	"time"
 )
 
-// HealthHandler handles GET /health — returns server liveness status as JSON.
-// Used by Docker HEALTHCHECK and load-balancer probes.
+// Version is reported by the health endpoint. It can be set at build time
+// with -ldflags "-X imagecompressor-dct/internal/handlers.Version=...".
+var Version = "dev"
+
+// pythonAvailable looks for the interpreter once. Health checks arrive every
+// few seconds, and the answer does not change while the process runs.
+var pythonAvailable = sync.OnceValue(func() bool {
+	_, err := exec.LookPath("python3")
+	return err == nil
+})
+
+// HealthHandler handles GET /health for container and load balancer probes.
+// "python" tells whether the optional Python benchmarks can run.
 func HealthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	pythonOK := exec.CommandContext(ctx, "python3", "--version").Run() == nil
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"python":    pythonOK,
-		"version":   "1.0.0",
+		"python":    pythonAvailable(),
+		"version":   Version,
 	})
 }

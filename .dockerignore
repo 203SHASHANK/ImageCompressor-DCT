@@ -1,27 +1,26 @@
-# Build artifacts
+# Build output
 bin/
 *.exe
 
-# Tests (not needed in image)
+# Not needed in the image
 test/
 *_test.go
 coverage.out
-
-# Development tooling
-.git/
-.gitignore
-.vscode/
-.idea/
+coverage.html
+Gallery/
+*.md
 Makefile
 
-# Docs
-*.md
+# Tooling
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
 
-# OS noise
+# OS and temp files
 .DS_Store
 Thumbs.db
-
-# Temp / logs
 tmp/
 *.tmp
 *.log

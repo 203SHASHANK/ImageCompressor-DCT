@@ -77,7 +77,7 @@ func TestCalculateSSIM_TooSmall(t *testing.T) {
 	}
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// Helpers
 
 func createUniformImage(width, height int, c color.RGBA) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))

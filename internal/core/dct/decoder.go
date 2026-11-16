@@ -1,243 +1,287 @@
 package dct
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
-	"imagecompressor-dct/internal/core/huffman"
 	"math"
+	"sync"
+
+	"imagecompressor-dct/internal/core/huffman"
 )
 
-// Decoder reconstructs images from the custom .dct binary format.
+// Decoder reconstructs images from .dct data. It is stateless and safe for
+// concurrent use.
 type Decoder struct{}
 
-// NewDecoder creates a Decoder instance.
+// NewDecoder creates a Decoder.
 func NewDecoder() *Decoder {
 	return &Decoder{}
 }
 
-// Decode reconstructs an image.RGBA from compressed .dct byte data.
-func (decoder *Decoder) Decode(data []byte) (image.Image, error) {
-	width, height, quality, subsampling, yData, cbData, crData, err := unpackChannels(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unpack compressed data: %w", err)
-	}
-
-	luminanceTable := buildQuantizationTable(standardLuminanceTable, quality)
-	chrominanceTable := buildQuantizationTable(standardChrominanceTable, quality)
-
-	yPlane := decoder.decompressChannel(yData, width, height, luminanceTable)
-
-	// Determine chroma plane dimensions based on subsampling mode.
-	cbWidth, cbHeight := chromaDimensions(width, height, ChromaSubsampling(subsampling))
-	cbPlane := decoder.decompressChannel(cbData, cbWidth, cbHeight, chrominanceTable)
-	crPlane := decoder.decompressChannel(crData, cbWidth, cbHeight, chrominanceTable)
-
-	// Upsample chroma planes back to full resolution if needed.
-	cbPlane = upsampleChroma(cbPlane, width, height, ChromaSubsampling(subsampling))
-	crPlane = upsampleChroma(crPlane, width, height, ChromaSubsampling(subsampling))
-
-	return buildRGBAImage(yPlane, cbPlane, crPlane, width, height), nil
+// header is the parsed fixed-size part of a .dct file.
+type header struct {
+	width, height int
+	quality       int
+	subsampling   ChromaSubsampling
+	streams       [3][]byte // Y, Cb, Cr, still entropy-coded
 }
 
-// decompressChannel reconstructs a single-channel plane from the compact RLE+delta stream.
-// Each block: dc_delta, then AC values until eobMarker (remaining ACs implicitly zero).
-func (decoder *Decoder) decompressChannel(coefficients []int, width, height int, quantTable [blockSize][blockSize]float64) [][]float64 {
-	paddedHeight := ceilDiv(height, blockSize) * blockSize
-	paddedWidth := ceilDiv(width, blockSize) * blockSize
-
-	plane := make([][]float64, paddedHeight)
-	for row := range plane {
-		plane[row] = make([]float64, paddedWidth)
+// Decode reconstructs an image from .dct data.
+//
+// The input is validated as untrusted: a damaged or hostile file produces an
+// error, never a panic or an oversized allocation.
+func (d *Decoder) Decode(data []byte) (image.Image, error) {
+	h, err := parseHeader(data)
+	if err != nil {
+		return nil, err
 	}
 
-	blocksPerRow := paddedWidth / blockSize
-	totalBlocks := (paddedHeight / blockSize) * blocksPerRow
+	luminanceTable := buildQuantizationTable(standardLuminanceTable, h.quality)
+	chrominanceTable := buildQuantizationTable(standardChrominanceTable, h.quality)
+	chromaWidth, chromaHeight := chromaDimensions(h.width, h.height, h.subsampling)
 
-	pos := 0
-	prevDC := 0
+	channels := [3]struct {
+		name          string
+		width, height int
+		table         *block
+	}{
+		{"Y", h.width, h.height, &luminanceTable},
+		{"Cb", chromaWidth, chromaHeight, &chrominanceTable},
+		{"Cr", chromaWidth, chromaHeight, &chrominanceTable},
+	}
 
-	for blockIndex := 0; blockIndex < totalBlocks && pos < len(coefficients); blockIndex++ {
-		var zigzag [64]int
+	// Entropy decoding is sequential within a channel, so the three channels
+	// are decoded side by side.
+	var (
+		symbols [3][]int
+		errs    [3]error
+		wg      sync.WaitGroup
+	)
+	for i, ch := range channels {
+		wg.Add(1)
+		go func(i, blocks int) {
+			defer wg.Done()
+			// A block contributes at most 64 coefficients plus a marker.
+			symbols[i], errs[i] = huffman.DecodeLimit(h.streams[i], blocks*65)
+		}(i, ceilDiv(ch.width, blockSize)*ceilDiv(ch.height, blockSize))
+	}
+	wg.Wait()
 
-		dc := prevDC + coefficients[pos]
+	var planes [3]*plane
+	for i, ch := range channels {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("%s channel: %w", ch.name, errs[i])
+		}
+		planes[i], err = decompressPlane(symbols[i], ch.width, ch.height, ch.table)
+		if err != nil {
+			return nil, fmt.Errorf("%s channel: %w", ch.name, err)
+		}
+	}
+
+	if h.subsampling != Subsampling444 {
+		planes[1] = upsample(planes[1], h.width, h.height)
+		planes[2] = upsample(planes[2], h.width, h.height)
+	}
+	return toRGBA(planes[0], planes[1], planes[2]), nil
+}
+
+// parseHeader validates the fixed header and slices out the three streams.
+func parseHeader(data []byte) (*header, error) {
+	if len(data) < headerSize {
+		return nil, fmt.Errorf("data too short for header: %d bytes", len(data))
+	}
+	if !bytes.Equal(data[:4], magic[:]) {
+		return nil, errors.New("not a .dct file (bad magic bytes)")
+	}
+	if data[4] != formatVersion {
+		return nil, fmt.Errorf("unsupported format version %d", data[4])
+	}
+
+	h := &header{
+		width:       int(binary.LittleEndian.Uint32(data[5:])),
+		height:      int(binary.LittleEndian.Uint32(data[9:])),
+		quality:     int(data[13]),
+		subsampling: ChromaSubsampling(data[14]),
+	}
+	if h.width < 1 || h.height < 1 || h.width > maxDimension || h.height > maxDimension ||
+		h.width*h.height > maxPixels {
+		return nil, fmt.Errorf("invalid image size %dx%d", h.width, h.height)
+	}
+	if h.quality < 1 || h.quality > 100 {
+		return nil, fmt.Errorf("invalid quality %d", h.quality)
+	}
+	if !h.subsampling.valid() {
+		return nil, fmt.Errorf("invalid chroma subsampling mode %d", h.subsampling)
+	}
+
+	// Lengths are summed as uint64 so that three large 32-bit values cannot
+	// overflow and slip past the bounds check.
+	rest := data[headerSize:]
+	var offset uint64
+	for i := range h.streams {
+		length := uint64(binary.LittleEndian.Uint32(data[15+4*i:]))
+		if offset+length > uint64(len(rest)) {
+			return nil, fmt.Errorf("data truncated: stream %d needs %d bytes, %d available",
+				i, length, uint64(len(rest))-offset)
+		}
+		h.streams[i] = rest[offset : offset+length]
+		offset += length
+	}
+	return h, nil
+}
+
+// decompressPlane rebuilds one plane from its integer stream: undo the DC
+// delta coding and zero truncation, then dequantize and inverse-transform
+// every block.
+func decompressPlane(symbols []int, width, height int, table *block) (*plane, error) {
+	blocksWide := ceilDiv(width, blockSize)
+	blocksHigh := ceilDiv(height, blockSize)
+	totalBlocks := blocksWide * blocksHigh
+
+	// Pass 1 (sequential, because of the DC deltas): expand the stream into
+	// 64 zigzag-ordered coefficients per block.
+	quantized := make([]int, totalBlocks*64)
+	pos, dc := 0, 0
+	for b := 0; b < totalBlocks; b++ {
+		if pos >= len(symbols) {
+			return nil, fmt.Errorf("coefficient stream ends at block %d of %d", b, totalBlocks)
+		}
+		if symbols[pos] == eobMarker {
+			return nil, fmt.Errorf("block %d has no DC coefficient", b)
+		}
+		dc += symbols[pos]
 		pos++
-		prevDC = dc
-		zigzag[0] = dc
 
-		for acIdx := 1; pos < len(coefficients); {
-			v := coefficients[pos]
+		coeffs := quantized[b*64:][:64]
+		coeffs[0] = dc
+		for i := 1; ; i++ {
+			if pos >= len(symbols) {
+				return nil, fmt.Errorf("block %d has no end-of-block marker", b)
+			}
+			v := symbols[pos]
 			pos++
 			if v == eobMarker {
 				break
 			}
-			if acIdx < 64 {
-				zigzag[acIdx] = v
-				acIdx++
+			if i > 63 {
+				return nil, fmt.Errorf("block %d has more than 64 coefficients", b)
 			}
+			coeffs[i] = v
 		}
+	}
+	if pos != len(symbols) {
+		return nil, fmt.Errorf("%d unexpected symbols after the last block", len(symbols)-pos)
+	}
 
-		quantized := zigzagUnflatten(zigzag[:])
-		dctBlock := dequantizeBlock(quantized, quantTable)
-		spatialBlock := InverseDCT2D(dctBlock)
+	// Pass 2 (parallel): blocks no longer depend on each other.
+	out := newPlane(width, height)
+	forEachRow(blocksHigh, func(br int) {
+		var q [blockSize][blockSize]int
+		for bc := 0; bc < blocksWide; bc++ {
+			coeffs := quantized[(br*blocksWide+bc)*64:][:64]
+			for i, pos := range zigzag {
+				q[pos/blockSize][pos%blockSize] = coeffs[i]
+			}
+			dequantized := dequantizeBlock(&q, table)
+			samples := InverseDCT2D(dequantized)
 
-		blockRow := (blockIndex / blocksPerRow) * blockSize
-		blockCol := (blockIndex % blocksPerRow) * blockSize
-
-		for row := 0; row < blockSize; row++ {
-			for col := 0; col < blockSize; col++ {
-				if blockRow+row < paddedHeight && blockCol+col < paddedWidth {
-					plane[blockRow+row][blockCol+col] = spatialBlock[row][col]
+			// Blocks on the right and bottom edge may extend past the
+			// image; only the part inside it is kept.
+			for r := 0; r < blockSize && br*blockSize+r < height; r++ {
+				row := out.row(br*blockSize + r)
+				for c := 0; c < blockSize && bc*blockSize+c < width; c++ {
+					row[bc*blockSize+c] = samples[r][c]
 				}
 			}
 		}
-	}
-
-	trimmed := make([][]float64, height)
-	for row := 0; row < height; row++ {
-		trimmed[row] = plane[row][:width]
-	}
-	return trimmed
+	})
+	return out, nil
 }
 
-// buildRGBAImage converts three YCbCr planes into an *image.RGBA.
-func buildRGBAImage(yPlane, cbPlane, crPlane [][]float64, width, height int) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			pixel := ycbcrToRGB(yPlane[row][col], cbPlane[row][col], crPlane[row][col])
-			img.SetRGBA(col, row, pixel)
-		}
+// upsample enlarges a color plane to width x height with bilinear
+// interpolation: every output sample is a weighted average of the (up to)
+// four nearest source samples. Compared with simply repeating each sample
+// this avoids blocky color edges.
+func upsample(src *plane, width, height int) *plane {
+	type tap struct {
+		lo, hi int     // the two source indices to blend
+		weight float64 // share of hi; lo gets 1-weight
 	}
+
+	// taps maps each output index to its two source neighbours. Sample
+	// centers are aligned: output i covers the same area as source
+	// (i+0.5)*srcLen/dstLen - 0.5.
+	taps := func(dstLen, srcLen int) []tap {
+		out := make([]tap, dstLen)
+		scale := float64(srcLen) / float64(dstLen)
+		for i := range out {
+			pos := (float64(i)+0.5)*scale - 0.5
+			if pos < 0 {
+				pos = 0
+			}
+			lo := int(math.Floor(pos))
+			if lo > srcLen-1 {
+				lo = srcLen - 1
+			}
+			hi := lo + 1
+			if hi > srcLen-1 {
+				hi = srcLen - 1
+			}
+			out[i] = tap{lo: lo, hi: hi, weight: pos - float64(lo)}
+		}
+		return out
+	}
+
+	// Horizontal and vertical weights are separable and identical for every
+	// row or column, so they are computed once.
+	xTaps := taps(width, src.width)
+	yTaps := taps(height, src.height)
+
+	dst := newPlane(width, height)
+	forEachRow(height, func(r int) {
+		yt := yTaps[r]
+		top, bottom := src.row(yt.lo), src.row(yt.hi)
+		out := dst.row(r)
+		for c, xt := range xTaps {
+			upper := top[xt.lo]*(1-xt.weight) + top[xt.hi]*xt.weight
+			lower := bottom[xt.lo]*(1-xt.weight) + bottom[xt.hi]*xt.weight
+			out[c] = upper*(1-yt.weight) + lower*yt.weight
+		}
+	})
+	return dst
+}
+
+// toRGBA converts full-resolution Y, Cb and Cr planes back to an RGBA image.
+func toRGBA(y, cb, cr *plane) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, y.width, y.height))
+
+	forEachRow(y.height, func(r int) {
+		dst := img.Pix[r*img.Stride:]
+		yRow, cbRow, crRow := y.row(r), cb.row(r), cr.row(r)
+		for c := 0; c < y.width; c++ {
+			luma := yRow[c] + 128
+			dst[4*c] = clampToByte(luma + 1.402*crRow[c])
+			dst[4*c+1] = clampToByte(luma - 0.344136*cbRow[c] - 0.714136*crRow[c])
+			dst[4*c+2] = clampToByte(luma + 1.772*cbRow[c])
+			dst[4*c+3] = 255
+		}
+	})
 	return img
 }
 
-// chromaDimensions returns the chroma plane size for a given subsampling mode.
-func chromaDimensions(width, height int, subsampling ChromaSubsampling) (int, int) {
-	switch subsampling {
-	case Subsampling420:
-		return ceilDiv(width, 2), ceilDiv(height, 2)
-	case Subsampling422:
-		return ceilDiv(width, 2), height
-	default:
-		return width, height
+// clampToByte rounds v to the nearest integer and limits it to [0, 255].
+// Rounding matters: truncating would darken every pixel by half a level on
+// average.
+func clampToByte(v float64) uint8 {
+	v += 0.5
+	if v <= 0 {
+		return 0
 	}
+	if v >= 255 {
+		return 255
+	}
+	return uint8(v)
 }
-
-// upsampleChroma expands a chroma plane back to full luma resolution using
-// bilinear interpolation. Bilinear vs nearest-neighbor gives ~0.15–0.3 dB
-// better PSNR with no change in compressed size.
-func upsampleChroma(plane [][]float64, targetWidth, targetHeight int, subsampling ChromaSubsampling) [][]float64 {
-	if subsampling == Subsampling444 {
-		return plane
-	}
-
-	srcH := len(plane)
-	srcW := 0
-	if srcH > 0 {
-		srcW = len(plane[0])
-	}
-
-	clampI := func(v, lo, hi int) int {
-		if v < lo {
-			return lo
-		}
-		if v > hi {
-			return hi
-		}
-		return v
-	}
-
-	bilinear := func(row, col int, scaleY, scaleX float64) float64 {
-		// Map target pixel centre to source coordinate (JPEG chroma siting).
-		srcY := (float64(row)+0.5)/scaleY - 0.5
-		srcX := (float64(col)+0.5)/scaleX - 0.5
-
-		y0 := int(math.Floor(srcY))
-		x0 := int(math.Floor(srcX))
-		y1 := y0 + 1
-		x1 := x0 + 1
-
-		y0 = clampI(y0, 0, srcH-1)
-		y1 = clampI(y1, 0, srcH-1)
-		x0 = clampI(x0, 0, srcW-1)
-		x1 = clampI(x1, 0, srcW-1)
-
-		fy := srcY - math.Floor(srcY)
-		fx := srcX - math.Floor(srcX)
-		if srcY < 0 {
-			fy = 0
-		}
-		if srcX < 0 {
-			fx = 0
-		}
-
-		tl := plane[y0][x0]
-		tr := plane[y0][x1]
-		bl := plane[y1][x0]
-		br := plane[y1][x1]
-		return tl*(1-fx)*(1-fy) + tr*fx*(1-fy) + bl*(1-fx)*fy + br*fx*fy
-	}
-
-	result := make([][]float64, targetHeight)
-	for row := 0; row < targetHeight; row++ {
-		result[row] = make([]float64, targetWidth)
-		for col := 0; col < targetWidth; col++ {
-			switch subsampling {
-			case Subsampling420:
-				result[row][col] = bilinear(row, col, 2.0, 2.0)
-			case Subsampling422:
-				result[row][col] = bilinear(row, col, 1.0, 2.0)
-			}
-		}
-	}
-	return result
-}
-
-// unpackChannels parses the binary .dct format produced by packChannels.
-// Supports version 2 (Huffman-encoded channels).
-func unpackChannels(data []byte) (width, height, quality, subsampling int, yData, cbData, crData []int, err error) {
-	const headerSize = 4 + 1 + 4 + 4 + 1 + 1 + 4 + 4 + 4
-	if len(data) < headerSize {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("data too short for header: %d bytes", len(data))
-	}
-
-	if string(data[0:3]) != "DCT" {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("invalid magic bytes")
-	}
-
-	width = int(binary.LittleEndian.Uint32(data[5:9]))
-	height = int(binary.LittleEndian.Uint32(data[9:13]))
-	quality = int(data[13])
-	subsampling = int(data[14])
-	yLen := int(binary.LittleEndian.Uint32(data[15:19]))
-	cbLen := int(binary.LittleEndian.Uint32(data[19:23]))
-	crLen := int(binary.LittleEndian.Uint32(data[23:27]))
-
-	expectedSize := headerSize + yLen + cbLen + crLen
-	if len(data) < expectedSize {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("data too short: need %d bytes, got %d", expectedSize, len(data))
-	}
-
-	offset := headerSize
-	yData, err = huffman.Decode(data[offset : offset+yLen])
-	if err != nil {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("Y channel Huffman decode failed: %w", err)
-	}
-	offset += yLen
-
-	cbData, err = huffman.Decode(data[offset : offset+cbLen])
-	if err != nil {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("Cb channel Huffman decode failed: %w", err)
-	}
-	offset += cbLen
-
-	crData, err = huffman.Decode(data[offset : offset+crLen])
-	if err != nil {
-		return 0, 0, 0, 0, nil, nil, nil, fmt.Errorf("Cr channel Huffman decode failed: %w", err)
-	}
-
-	return width, height, quality, subsampling, yData, cbData, crData, nil
-}
-
-

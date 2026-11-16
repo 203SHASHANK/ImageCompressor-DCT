@@ -1,6 +1,6 @@
 'use strict';
 
-// ── SVG Icon Library ───────────────────────────────────────────────────────
+// SVG Icon Library
 const ICONS = {
   trophy: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4a2 2 0 0 1-2-2V5h4"/><path d="M18 9h2a2 2 0 0 0 2-2V5h-4"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M6 9a6 6 0 0 0 12 0V3H6z"/></svg>`,
   ratio:  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><polyline points="7 12 10 9 13 12 17 8"/></svg>`,
@@ -14,7 +14,7 @@ const ICONS = {
 };
 function svgIcon(name) { return ICONS[name] || ''; }
 
-// ── State ──────────────────────────────────────────────────────────────────
+// State
 let currentImageID      = null;
 let currentExportID     = null;
 let originalObjectURL   = null;
@@ -23,7 +23,7 @@ let _origPixels = null;   // cached for heatmap redraws
 let _compPixels = null;
 let _heatW = 0, _heatH = 0;
 
-// ── Init Icons ─────────────────────────────────────────────────────────────
+// Init Icons
 document.addEventListener('DOMContentLoaded', () => {
   const set = (id, icon) => { const el = document.getElementById(id); if (el) el.innerHTML = svgIcon(icon); };
   set('dl-icon-dct',  'file');
@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (csv) csv.innerHTML = svgIcon('download') + ' CSV Report';
 });
 
-// ── Keyboard Shortcuts ─────────────────────────────────────────────────────
+// Keyboard Shortcuts
 document.addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey) {
     if (e.key === 'u') { e.preventDefault(); document.getElementById('file-input').click(); }
@@ -42,13 +42,13 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ── Theme ──────────────────────────────────────────────────────────────────
+// Theme
 function toggleTheme() {
   const isLight = document.body.classList.toggle('light');
   document.getElementById('theme-toggle').textContent = isLight ? 'Dark Mode' : 'Light Mode';
 }
 
-// ── Loading Overlay ────────────────────────────────────────────────────────
+// Loading Overlay
 function showLoading(text, sub) {
   document.getElementById('loading-text').textContent = text || 'Processing…';
   document.getElementById('loading-sub').textContent  = sub  || '';
@@ -58,7 +58,7 @@ function hideLoading() {
   document.getElementById('loading-overlay').classList.remove('active');
 }
 
-// ── Drag & Drop ────────────────────────────────────────────────────────────
+// Drag & Drop
 function onDragOver(e) {
   e.preventDefault();
   document.getElementById('drop-zone').classList.add('drag-over');
@@ -77,7 +77,7 @@ function onFileSelected(e) {
   if (file) uploadFile(file);
 }
 
-// ── Upload ─────────────────────────────────────────────────────────────────
+// Upload
 async function uploadFile(file) {
   showLoading('Uploading…', file.name);
   const fd = new FormData();
@@ -128,7 +128,7 @@ function resetCompressedPanel() {
   lastBenchmarkResults = [];
 }
 
-// ── Compress ───────────────────────────────────────────────────────────────
+// Compress
 async function compressImage() {
   if (!currentImageID) return;
 
@@ -174,7 +174,7 @@ async function compressImage() {
     currentExportID = data.export_id || null;
     // Update DCT size label in download bar
     const dctLabel = document.getElementById('dl-size-dct');
-    if (dctLabel) dctLabel.textContent = formatBytes(data.compressed_size) + ' — exact';
+    if (dctLabel) dctLabel.textContent = formatBytes(data.compressed_size) + ' - exact';
 
     setStatus('Compression complete.');
   } catch (err) {
@@ -183,7 +183,7 @@ async function compressImage() {
   }
 }
 
-// ── Progress Bar ──────────────────────────────────────────────────────────
+// Progress Bar
 function runProgressBar() {
   const container = document.getElementById('progress-container');
   const fill      = document.getElementById('progress-fill');
@@ -206,7 +206,7 @@ function runProgressBar() {
   }, 220);
 }
 
-// ── Image Zoom ─────────────────────────────────────────────────────────────
+// Image Zoom
 function addImageZoom() {
   document.querySelectorAll('.image-panel img').forEach(img => {
     img.style.cursor = 'zoom-in';
@@ -223,7 +223,7 @@ function addImageZoom() {
   });
 }
 
-// ── Export / Download ──────────────────────────────────────────────────────
+// Export / Download
 async function downloadImage(format) {
   if (!currentExportID) { setStatus('No compressed image to download.'); return; }
 
@@ -261,7 +261,7 @@ async function downloadImage(format) {
   URL.revokeObjectURL(objURL);
 }
 
-// ── Difference Heatmap ─────────────────────────────────────────────────────
+// Difference Heatmap
 function generateDiffHeatmap() {
   const origImg = document.getElementById('original-preview');
   const compImg = document.getElementById('compressed-preview');
@@ -289,7 +289,7 @@ function generateDiffHeatmap() {
     _heatH = sh;
     paintHeatmap();
   } catch (e) {
-    // Canvas taint or other issue — silently skip heatmap
+    // Canvas taint or other issue - silently skip heatmap
     console.warn('Heatmap generation skipped:', e.message);
   }
 }
@@ -342,7 +342,7 @@ function paintHeatmap() {
   document.getElementById('heatmap-legend').style.display = '';
 }
 
-// ── Metric Cards ───────────────────────────────────────────────────────────
+// Metric Cards
 function qualityClass(psnr) {
   return psnr >= 40 ? 'excellent' : psnr >= 35 ? 'good' : psnr >= 30 ? 'acceptable' : 'poor';
 }
@@ -372,8 +372,8 @@ function renderMetrics(data) {
     'DCT Output':    'Size of the compressed .dct binary',
     'File Ratio':    'How many times smaller the .dct file is vs the uploaded file',
     'vs Raw RGB':    'Compression ratio vs uncompressed RGB pixel data',
-    'PSNR':          'Peak Signal-to-Noise Ratio — higher is better (30+ ok, 40+ excellent)',
-    'SSIM':          'Structural Similarity Index — closer to 1.0 means more similar to original',
+    'PSNR':          'Peak Signal-to-Noise Ratio - higher is better (30+ ok, 40+ excellent)',
+    'SSIM':          'Structural Similarity Index - closer to 1.0 means more similar to original',
     'Encode Time':   'Time taken to run the full DCT compression pipeline',
   };
 
@@ -432,7 +432,7 @@ function renderMetrics(data) {
   `).join('');
 }
 
-// ── Benchmark ──────────────────────────────────────────────────────────────
+// Benchmark
 async function runBenchmark() {
   if (!currentImageID) return;
 
@@ -453,7 +453,7 @@ async function runBenchmark() {
     lastBenchmarkResults = data.results || [];
     renderBenchmarkTable(lastBenchmarkResults);
     document.getElementById('benchmark-card').style.display = '';
-    setStatus('Benchmark complete — ' + lastBenchmarkResults.length + ' methods compared.');
+    setStatus('Benchmark complete - ' + lastBenchmarkResults.length + ' methods compared.');
   } catch (err) {
     hideLoading();
     setStatus('Benchmark error: ' + err.message);
@@ -502,12 +502,15 @@ function renderBenchmarkTable(results) {
       </tr>`;
   }).join('');
 
-  // ── Hero Stats ──
+  // Hero Stats
   const yours  = results.find(r => r.Method === 'DCTPress');
   const goJpeg = results.find(r => r.Method === 'Go stdlib JPEG');
   if (yours && goJpeg && goJpeg.CompressedSize > 0 && goJpeg.EncodingTime > 0) {
     const pctDiff    = ((goJpeg.CompressedSize - yours.CompressedSize) / goJpeg.CompressedSize * 100);
-    const speedRatio = (yours.EncodingTime / goJpeg.EncodingTime).toFixed(1);
+    const faster     = yours.EncodingTime <= goJpeg.EncodingTime;
+    const speedRatio = (faster ? goJpeg.EncodingTime / yours.EncodingTime
+                               : yours.EncodingTime / goJpeg.EncodingTime).toFixed(1);
+    const speedText  = `${speedRatio}x ${faster ? 'faster' : 'slower'}`;
     const winner     = pctDiff >= 0 ? 'DCTPress' : 'Go stdlib JPEG';
     document.getElementById('bm-hero').innerHTML = `
       <div class="bm-hero-stat">
@@ -529,41 +532,28 @@ function renderBenchmarkTable(results) {
       <div class="bm-hero-stat">
         <div class="bm-hero-icon">${svgIcon('speed')}</div>
         <div>
-          <div class="bm-hero-label">Speed Trade-off</div>
-          <div class="bm-hero-value">${speedRatio}x slower</div>
+          <div class="bm-hero-label">Encode Speed vs stdlib</div>
+          <div class="bm-hero-value">${speedText}</div>
           <div class="bm-hero-detail">${Math.round(yours.EncodingTime/1e6)}ms vs ${Math.round(goJpeg.EncodingTime/1e6)}ms</div>
         </div>
       </div>`;
 
-    // ── Insights ──
-    const qualityDiff = (yours.PSNR - goJpeg.PSNR).toFixed(2);
-
-    const pythonResults = results.filter(r => r.Language === 'Python');
-    const avgGoRatio    = results.filter(r => r.Language === 'Go')
-                                  .reduce((s, r) => s + r.CompressionRatio, 0) / 2;
-    const buggyPython   = pythonResults.filter(r => r.CompressionRatio < avgGoRatio * 0.1);
-
-    const bugInsight = buggyPython.length ? `
-      <div class="bm-insight bm-insight-bug">
-        <div class="bm-insight-icon">${svgIcon('bug')}</div>
-        <div><strong>Python Ratio Bug Detected</strong>
-          <p>${buggyPython.map(r => r.Method).join(', ')} show(s) a ratio of ${buggyPython.map(r => r.CompressionRatio.toFixed(2) + 'x').join(', ')} — impossible. The script compares compressed input vs compressed output instead of raw RGB. Fix: use <code>width × height × 3</code> as original size.</p>
-        </div>
-      </div>` : '';
+    // Insights
+    const qualityDiff = yours.PSNR - goJpeg.PSNR;
 
     document.getElementById('bm-insights').innerHTML = `
       <div class="bm-insight bm-insight-win">
         <div class="bm-insight-icon">${svgIcon('star')}</div>
-        <div><strong>Your Advantage</strong>
-          <p>DCTPress is ${Math.abs(pctDiff).toFixed(1)}% ${pctDiff >= 0 ? 'smaller' : 'larger'} than Go stdlib JPEG with only ${Math.abs(qualityDiff)} dB PSNR difference.</p>
+        <div><strong>Size and Quality</strong>
+          <p>DCTPress is ${Math.abs(pctDiff).toFixed(1)}% ${pctDiff >= 0 ? 'smaller' : 'larger'} than Go stdlib JPEG, with PSNR ${Math.abs(qualityDiff).toFixed(2)} dB ${qualityDiff >= 0 ? 'higher' : 'lower'}.</p>
         </div>
       </div>
       <div class="bm-insight bm-insight-tradeoff">
         <div class="bm-insight-icon">${svgIcon('speed')}</div>
-        <div><strong>Worth the Wait?</strong>
-          <p>${speedRatio}x slower encoding — worth it for archival use, not for real-time applications.</p>
+        <div><strong>Encode Time</strong>
+          <p>${Math.round(yours.EncodingTime/1e6)} ms against ${Math.round(goJpeg.EncodingTime/1e6)} ms for Go stdlib JPEG (${speedText}).</p>
         </div>
-      </div>${bugInsight}`;
+      </div>`;
   } else {
     document.getElementById('bm-hero').innerHTML = '';
     document.getElementById('bm-insights').innerHTML = '';
@@ -574,7 +564,7 @@ function renderBenchmarkTable(results) {
   if (old) old.remove();
 }
 
-// ── CSV Export ─────────────────────────────────────────────────────────────
+// CSV Export
 function downloadCSV() {
   if (!lastBenchmarkResults.length) { setStatus('No benchmark data to export.'); return; }
 
@@ -597,7 +587,7 @@ function downloadCSV() {
   URL.revokeObjectURL(url);
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// Helpers
 function formatBytes(bytes) {
   if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
   if (bytes >= 1024)        return (bytes / 1024).toFixed(1) + ' KB';

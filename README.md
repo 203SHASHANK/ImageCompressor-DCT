@@ -1,548 +1,265 @@
-# DCTPress — Image Compression Engine
+# ImageCompressor-DCT
 
-<div align="center">
+A JPEG-style lossy image codec written from scratch in Go: block DCT,
+quantization, zigzag ordering and Huffman coding, with no codec libraries.
+It comes with a decoder, a command-line tool, an HTTP API and a web UI that
+benchmarks it against Go's standard JPEG encoder, Pillow and OpenCV.
 
-**A from-scratch DCT-based image codec with adaptive Huffman entropy coding, built in Go.**
+The codec is called DCTPress in the UI and the benchmark output. Its file
+format (`.dct`) is its own and is not JPEG-compatible.
 
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go)](https://go.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![Docker Ready](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker)](Dockerfile)
-[![Python Bridge](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)](internal/python/)
+## Quick start
 
-</div>
-
----
-
-## What This Is
-
-DCTPress is a complete image compression pipeline written from first principles — no libjpeg, no codec bindings, no shortcuts. It implements the core ideas behind JPEG (block DCT, perceptual quantization, entropy coding) in clean Go, then exposes the codec through a REST API and a live benchmarking web UI that compares it against Go stdlib JPEG, Python PIL, and Python OpenCV side-by-side.
-
-The goal was to understand every decision that goes into a real image codec: why 8×8 blocks, why zigzag ordering, why DC delta coding, why the human visual system tolerates more chroma loss than luma loss. Every one of those decisions is implemented and measurable in this codebase.
-
----
-
-## Quick Start
+Requires Go 1.25+. Python 3 with Pillow and OpenCV is optional and only adds
+two rows to the benchmark.
 
 ```bash
-# Prerequisites: Go 1.25+, Python 3.11+
+git clone https://github.com/203SHASHANK/ImageCompressor-DCT
+cd ImageCompressor-DCT
 
-git clone https://github.com/shashankc2507/imagecompressor-dct
-cd imagecompressor-dct
-
-make setup    # go mod tidy + pip install Python deps
-make run      # http://localhost:8081
-
-make restart  # rebuild and restart a running server
-make test     # full test suite with coverage
+make run            # web UI and API on http://localhost:8081
+make test           # unit and integration tests
 ```
 
-With Docker:
+Command line:
+
+```bash
+make build-cli
+./bin/dctpress encode -q 75 photo.png photo.dct
+./bin/dctpress decode photo.dct roundtrip.png
+./bin/dctpress bench  -q 75 photo.png
+```
+
+Docker:
 
 ```bash
 docker compose up   # http://localhost:8080
-docker compose down
 ```
 
----
+## Results
 
-## Benchmark Results (quality = 75, 1920×1080)
+Four 1920x1080 photographs at quality 75 with 4:2:0 chroma subsampling.
+File size and PSNR, DCTPress against Go's `image/jpeg`:
 
-| Codec | File Size | Ratio | PSNR | SSIM | Encode |
-|---|---|---|---|---|---|
-| **DCTPress** | **83.4 KB** | **48.3×** | 33.77 dB | 0.9924 | 179 ms |
-| Go stdlib JPEG | 86.9 KB | 46.4× | 33.84 dB | 0.9934 | 29 ms |
-| Python PIL | 76.8 KB | — | 33.70 dB | 0.9822 | 7 ms |
-| Python OpenCV | 86.7 KB | — | 33.70 dB | 0.9822 | 2 ms |
+| Photo | DCTPress | Go stdlib JPEG | Size difference | PSNR (DCTPress / stdlib) |
+|---|---|---|---|---|
+| Flower | 95.4 KB | 95.5 KB | -0.2% | 43.00 / 41.51 dB |
+| Mirror | 138.0 KB | 141.6 KB | -2.5% | 40.70 / 39.87 dB |
+| Tree | 154.1 KB | 146.1 KB | +5.5% | 39.03 / 38.13 dB |
+| Landscape | 295.2 KB | 282.7 KB | +4.4% | 32.73 / 32.40 dB |
 
-DCTPress produces a **4% smaller file than Go stdlib JPEG** at the same quality setting, with only 0.07 dB PSNR difference. The trade-off is ~6× slower encoding (179 ms vs 29 ms) — acceptable for archival use, not for real-time pipelines.
+In short: file sizes within about 5% of the standard library encoder in
+either direction, at 0.3 to 1.5 dB higher PSNR. Against raw 24-bit RGB that
+is a 21x to 65x reduction, depending on how much detail the photo has.
 
-The Python PIL/OpenCV ratios are not directly comparable because they measure compression against the uploaded file size (which may already be JPEG-compressed), not against raw RGB.
-
----
-
-## Architecture
-
-```
-Browser  ──multipart──▶  HTTP API (:8081)
-                              │
-                    ┌─────────┼──────────┐
-                    ▼         ▼          ▼
-               /compress  /benchmark  /export
-                    │         │
-                    ▼         ▼
-              DCT Encoder   BenchmarkService
-              DCT Decoder      │
-              PSNR / SSIM      ├── Go stdlib JPEG
-                               ├── Python PIL (subprocess)
-                               └── Python OpenCV (subprocess)
-```
-
-### Project Layout
+Full output for one photo, including the Python encoders:
 
 ```
-imagecompressor-dct/
-├── cmd/server/main.go              # HTTP server, route registration
-├── internal/
-│   ├── core/
-│   │   ├── dct/
-│   │   │   ├── transform.go        # Separable 2D DCT / IDCT, precomputed cosines
-│   │   │   ├── quantization.go     # ISO Annex K tables, quality scaling, DC tuning
-│   │   │   ├── encoder.go          # Full encode pipeline, parallel block processing
-│   │   │   └── decoder.go          # Full decode pipeline, bilinear chroma upsample
-│   │   ├── huffman/
-│   │   │   └── encoder.go          # Min-heap tree builder, bitstream packer/unpacker
-│   │   └── metrics/
-│   │       ├── psnr.go             # MSE → PSNR in dB
-│   │       └── ssim.go             # Sliding-window SSIM on luminance channel
-│   ├── handlers/handlers.go        # Upload, Compress, Benchmark, Download, Export
-│   ├── models/models.go            # Shared domain types
-│   ├── services/
-│   │   ├── compression_service.go  # Orchestrates encode + decode + metrics
-│   │   └── benchmark_service.go    # Runs all four codecs, collects results
-│   └── python/
-│       ├── bridge.go               # Subprocess runner, stderr capture, JSON parse
-│       └── scripts/
-│           ├── compress_pil.py     # PIL JPEG benchmark
-│           └── compress_opencv.py  # OpenCV JPEG benchmark
-├── web/
-│   ├── index.html                  # Single-page app
-│   ├── app.js                      # Upload, compress, benchmark, heatmap, export
-│   └── styles.css                  # Dark/light theme, animations, glassmorphism
-├── test/
-│   ├── unit/dct/                   # DCT transform + round-trip tests
-│   ├── unit/huffman/               # Huffman encode/decode tests
-│   ├── unit/metrics/               # PSNR/SSIM tests
-│   └── integration/api_test.go     # End-to-end HTTP tests
-├── Dockerfile                      # Multi-stage: Go builder + python:3.11-slim
-├── docker-compose.yml
-└── Makefile
+codec                 bytes    ratio   PSNR dB     SSIM  encode ms  decode ms
+DCTPress             138004    45.1x     40.70   0.9670       60.2       85.1
+Go stdlib JPEG       141577    43.9x     39.87   0.9657      106.1       43.7
+Python PIL           131119    47.4x     40.43   0.9660       37.4       23.3
+Python OpenCV        141290    44.0x     40.43   0.9660       12.0       20.4
 ```
 
----
+How to read this:
 
-## The Compression Pipeline — Step by Step
+- Every codec is measured the same way. Size is compared against raw RGB,
+  and PSNR and SSIM are computed by this program from each codec's own
+  decoded output.
+- Pillow and OpenCV call libjpeg-turbo, which is hand-optimized C with SIMD.
+  They are faster, and Pillow with optimized Huffman tables is also smaller.
+  They are the reference, not the competition.
+- Timings are medians of five runs on a 12-thread laptop CPU and vary with
+  load. The Python rows time only the encode and decode calls, not
+  interpreter start-up.
 
-### 1. Color Space Conversion (RGB → YCbCr)
+Reproduce with `./bin/dctpress bench <image>`.
 
-Every pixel is converted from RGB to YCbCr using the ITU-R BT.601 coefficients:
+### Speed of the building blocks
 
-```
-Y  =  0.299·R + 0.587·G + 0.114·B  − 128   (level-shifted to centre at 0)
-Cb = −0.168736·R − 0.331264·G + 0.5·B
-Cr =  0.5·R − 0.418688·G − 0.081312·B
-```
+From `make bench`, same machine:
 
-The level shift (−128 on Y) centres the values around zero before the DCT. This matters because the DCT assumes a zero-mean signal — without the shift, the DC coefficient would be enormous and the quantization step would waste precision on it.
-
-Y carries luminance (brightness). Cb and Cr carry colour difference signals. The human visual system is roughly 4× less sensitive to spatial detail in colour than in brightness, which is why chroma can be subsampled without visible quality loss.
-
-### 2. Chroma Subsampling
-
-Before encoding, the Cb and Cr planes are spatially downsampled:
-
-| Mode | Cb/Cr dimensions | Chroma samples saved |
-|---|---|---|
-| 4:4:4 | full resolution | 0% |
-| 4:2:2 | half width, full height | 50% |
-| 4:2:0 | half width, half height | 75% |
-
-4:2:0 is the default and the same mode used by standard JPEG. Downsampling is done by averaging 2×2 pixel regions (for 4:2:0) or adjacent horizontal pairs (for 4:2:2), not by simple decimation — this avoids aliasing at colour edges.
-
-### 3. Block Splitting and Padding
-
-Each channel plane is divided into non-overlapping 8×8 blocks. If the image dimensions are not multiples of 8, the edges are padded by replicating the last row/column. This is the same approach used by JPEG and avoids introducing artificial edges that would create high-frequency DCT coefficients.
-
-### 4. Forward DCT (Separable 2D)
-
-The core of the codec. Each 8×8 block of pixel values is transformed into 8×8 frequency coefficients using the 2D Discrete Cosine Transform.
-
-**Why DCT?** The DCT has excellent energy compaction for natural images — most of the signal energy ends up in a small number of low-frequency coefficients. The high-frequency coefficients (fine detail, sharp edges) are small and can be coarsely quantized or discarded entirely without visible quality loss.
-
-**Separable implementation:** The 2D DCT is computed as two sequential 1D passes — once across rows, once down columns. This is mathematically equivalent to the direct 2D formula but reduces complexity from O(n⁴) to O(n³) per block.
-
-```go
-// Forward 1D DCT-II (length 8)
-// Output[k] = 0.5 · α(k) · Σ_n input[n] · cos((2n+1)kπ/16)
-func forwardDCT1D(x [8]float64) [8]float64
-
-// 2D DCT: row pass → column pass
-func ForwardDCT2D(block [8][8]float64) [8][8]float64
-```
-
-The cosine values `cos((2n+1)kπ/16)` for all combinations of n and k are precomputed at package init into a `[8][8]float64` lookup table. This gives a ~2.4× speedup over computing `math.Cos` on every coefficient.
-
-**Parallel block processing:** The DCT, quantization, and zigzag steps are embarrassingly parallel — each block is independent. The encoder dispatches all blocks to a worker pool sized to `runtime.NumCPU()` via a channel, then collects results in order. DC delta encoding is done serially afterward since each block's DC value depends on the previous block's DC value.
-
-### 5. Quantization
-
-Each DCT coefficient `F(u,v)` is divided by a perceptual step size `Q(u,v)` and rounded to the nearest integer:
-
-```
-quantized(u,v) = round( F(u,v) / Q(u,v) )
-```
-
-The step sizes come from the ISO JPEG Annex K tables — two 8×8 matrices derived from human contrast sensitivity research. Low-frequency coefficients (top-left of the block) get small step sizes (high precision). High-frequency coefficients (bottom-right) get large step sizes (coarse precision or zero).
-
-**Quality scaling:** The JPEG reference formula maps quality 1–100 to a scale multiplier:
-
-```go
-if quality < 50 {
-    scale = 50.0 / float64(quality)   // aggressive: quality 1 → scale 50×
-} else {
-    scale = 2.0 - float64(quality)/50.0  // fine: quality 100 → scale 0 (lossless)
-}
-```
-
-Each base table entry is multiplied by this scale and clamped to [1, 255].
-
-**DC coefficient tuning:** The DC coefficient `F(0,0)` represents the mean luminance of the block. It has outsized perceptual impact — a coarsely quantized DC value makes the entire block look the wrong brightness. DCTPress applies an additional 20% reduction to the DC step size (`value × 0.80`) after quality scaling. This costs ~0.4 KB on a typical image but recovers ~0.08 dB PSNR.
-
-### 6. Zigzag Ordering
-
-The 8×8 quantized block is serialised into a 64-element sequence by traversing diagonals from the DC coefficient (top-left, lowest frequency) to the highest spatial frequency (bottom-right):
-
-```
-DC → (0,1) → (1,0) → (2,0) → (1,1) → (0,2) → (0,3) → ...
-```
-
-This ordering clusters the many near-zero high-frequency coefficients at the end of the sequence, which maximises the effectiveness of the EOB marker in the next step.
-
-### 7. DC Delta Coding + EOB Truncation
-
-Two techniques reduce the symbol count before entropy coding:
-
-**DC delta coding:** Instead of storing each block's DC value directly, only the *difference* from the previous block's DC value is stored. Adjacent blocks in natural images tend to have similar mean luminance, so these deltas are small and cluster near zero — ideal for Huffman coding.
-
-**EOB truncation:** After the last non-zero AC coefficient in the zigzag sequence, an End-of-Block marker (`−32768`, which cannot appear as a valid quantized coefficient) is written. All trailing zeros are implicit. For a typical image at quality 75, most blocks have only 5–15 non-zero AC coefficients out of 63, so this alone cuts the symbol count by 4–8×.
-
-The per-block stream looks like:
-
-```
-[dc_delta]  [ac_1] [ac_2] ... [ac_k]  [EOB=-32768]
-```
-
-### 8. Adaptive Huffman Entropy Coding
-
-The integer coefficient stream is compressed with a Huffman code built fresh for each image and each channel (Y, Cb, Cr independently).
-
-**Why per-image?** A static Huffman table (like standard JPEG uses) is tuned for average image statistics. A per-image table adapts to the actual coefficient distribution of this specific image — a mostly-flat image has very different statistics from a high-detail photograph.
-
-**Tree construction:** Symbol frequencies are counted in a single pass. A min-heap priority queue builds the optimal prefix-free tree in O(n log n) time by repeatedly merging the two lowest-frequency nodes.
-
-**Wire format:** The tree is serialised in pre-order into the bitstream header so the decoder can reconstruct it without any side channel:
-
-```
-[symbolCount(4)]
-[treeNodeCount(4)]
-[tree nodes, pre-order: 'L'+symbol(2) for leaves, 'I' for internal]
-[paddingBits(1)]
-[packed bitstream...]
-```
-
-Single-symbol inputs (e.g. a completely flat channel) are handled as a special case: just `[1][symbol][count]`, avoiding the overhead of a degenerate tree.
-
-**Bit packing:** The variable-length bit strings are packed MSB-first into bytes. The number of padding bits in the final byte is stored so the decoder knows where the valid bits end.
-
-### 9. Binary File Format (.dct)
-
-The complete compressed file is a single byte slice with a 27-byte header:
-
-```
-Offset  Size  Field
-0       4     Magic: "DCT\x02"
-4       1     Version: 2
-5       4     Width (uint32 LE)
-9       4     Height (uint32 LE)
-13      1     Quality (1–100)
-14      1     Chroma subsampling mode (0=444, 1=422, 2=420)
-15      4     Y channel Huffman blob length
-19      4     Cb channel Huffman blob length
-23      4     Cr channel Huffman blob length
-27      —     Y Huffman blob
-—       —     Cb Huffman blob
-—       —     Cr Huffman blob
-```
-
-Each channel is Huffman-encoded independently, which lets the entropy coder adapt to the different statistical distributions of luma vs chroma coefficients.
-
----
-
-## The Decode Pipeline
-
-Decoding is the exact inverse of encoding:
-
-1. Parse the 27-byte header to recover dimensions, quality, and subsampling mode
-2. Huffman-decode each channel blob back to the integer coefficient stream
-3. For each block: undo DC delta → zigzag unflatten → dequantize → Inverse DCT 2D
-4. Bilinear chroma upsample (if subsampled)
-5. YCbCr → RGB conversion and clamp to [0, 255]
-
-**Bilinear chroma upsampling:** On decode, the subsampled chroma planes are expanded back to full luma resolution using bilinear interpolation with JPEG cosited siting:
-
-```go
-// Maps target pixel centre to source coordinate
-srcY := (float64(row) + 0.5) / scaleY - 0.5
-srcX := (float64(col) + 0.5) / scaleX - 0.5
-
-// Four-sample bilinear blend
-result = tl*(1-fx)*(1-fy) + tr*fx*(1-fy) +
-         bl*(1-fx)*fy     + br*fx*fy
-```
-
-The `+0.5 / scale − 0.5` formula aligns pixel centres rather than pixel corners (JPEG cosited siting). This gives ~0.15–0.3 dB better PSNR than nearest-neighbor at zero cost in compressed file size.
-
----
-
-## Quality Metrics
-
-After every compression, DCTPress decodes the result and measures two quality metrics against the original:
-
-### PSNR (Peak Signal-to-Noise Ratio)
-
-```
-MSE  = mean( (original_pixel − compressed_pixel)² )  over all pixels and channels
-PSNR = 10 · log₁₀( 255² / MSE )  dB
-```
-
-Higher is better. Returns +∞ for identical images.
-
-| Range | Interpretation |
+| Benchmark | Result |
 |---|---|
-| < 30 dB | Noticeable degradation |
-| 30–35 dB | Acceptable for most uses |
-| 35–40 dB | Good quality |
-| > 40 dB | Excellent, near-lossless |
+| 8x8 DCT, direct formula | ~190,000 ns |
+| 8x8 DCT, separable with precomputed basis | ~1,000 ns |
+| Encode 1080p photo, one core | ~170 ms |
+| Encode 1080p photo, worker pool on 12 threads | ~75 ms |
+| Decode 1080p photo | ~85 ms |
 
-### SSIM (Structural Similarity Index)
+The worker pool gives about 2.2x, not 12x, because only the per-block work
+(color conversion, DCT, quantization) is parallel. Delta coding and Huffman
+coding are sequential within a channel.
 
-SSIM measures perceptual similarity by comparing local luminance, contrast, and structure in overlapping 8×8 windows across the image. It uses the Wang et al. 2004 formula with standard stability constants (k1=0.01, k2=0.03):
+## How the codec works
+
+Encoding (`internal/core/dct/encoder.go`):
+
+1. **Color conversion.** RGB is converted to YCbCr, which separates
+   brightness (Y) from color (Cb, Cr).
+2. **Chroma subsampling.** The eye resolves color detail poorly, so the two
+   color planes can be stored at half resolution: 4:2:0 halves both
+   directions, 4:2:2 only the horizontal, 4:4:4 keeps everything.
+3. **8x8 blocks and DCT.** Each plane is cut into 8x8 blocks. The discrete
+   cosine transform rewrites a block as 64 frequency coefficients: one
+   average (DC) and 63 patterns of increasing detail (AC). For photographs
+   most of the energy lands in a few low-frequency coefficients.
+4. **Quantization.** Each coefficient is divided by a step size from the
+   JPEG standard tables, scaled by the quality setting, and rounded. This is
+   the only lossy step. High frequencies get large steps and mostly round to
+   zero.
+5. **Zigzag ordering.** Coefficients are read out diagonally from low to
+   high frequency, so the zeros collect at the end of each block.
+6. **DC delta and end-of-block.** The DC value is stored as the difference
+   from the previous block, and everything after the last non-zero
+   coefficient is replaced by a single end-of-block marker.
+7. **Huffman coding.** The resulting integers are entropy-coded with a
+   Huffman code built for this image and channel, so common values (zero,
+   the end-of-block marker, small numbers) take one to three bits.
+
+Decoding reverses the steps. Subsampled color planes are scaled back up with
+bilinear interpolation.
+
+Differences from baseline JPEG:
+
+- Huffman tables are built per image and channel and stored in the file,
+  where baseline JPEG encoders usually ship fixed tables.
+- Symbols are whole coefficient values. JPEG codes (zero-run, size) pairs
+  followed by raw bits, which is more compact for long runs of zeros.
+- The DC quantization step is 20% finer than the standard table.
+
+### File format
 
 ```
-SSIM(x,y) = (2μₓμᵧ + C₁)(2σₓᵧ + C₂)
-            ─────────────────────────────
-            (μₓ² + μᵧ² + C₁)(σₓ² + σᵧ² + C₂)
+offset  size  field
+0       4     magic "DCT\x02"
+4       1     format version (2)
+5       4     width, little-endian
+9       4     height, little-endian
+13      1     quality (1-100)
+14      1     chroma subsampling (0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0)
+15      12    byte lengths of the Y, Cb and Cr streams (3 x uint32)
+27      ...   the three Huffman-coded streams
 ```
 
-Windows step by 4 pixels (half the window size) for dense coverage. The final score is the mean over all windows. Range is [0, 1]; values above 0.95 are excellent.
+Quantization tables are not stored: the decoder rebuilds them from the
+quality byte. Each stream starts with its serialized Huffman tree; the
+layout is documented in `internal/core/huffman/huffman.go`.
 
-SSIM is computed on the luminance channel only, which matches how the human visual system perceives image quality.
+The decoder treats its input as untrusted. Header fields, stream lengths,
+tree shape and symbol counts are all validated, and both decoders have fuzz
+targets (`make fuzz`).
 
----
+## Quality metrics
 
-## Python Benchmark Bridge
+- **PSNR** (`internal/core/metrics/psnr.go`): `10 * log10(255^2 / MSE)` over
+  all R, G and B samples. Higher is better; 30 to 40 dB is typical for lossy
+  photo compression.
+- **SSIM** (`internal/core/metrics/ssim.go`): structural similarity on
+  brightness, using uniform 8x8 windows moved in steps of 4. It follows the
+  formula from Wang et al. (2004) but not the reference 11x11 Gaussian
+  window, so values are close to, not identical with, other tools.
 
-The benchmark runner compares DCTPress against Python PIL and OpenCV by spawning them as subprocesses:
+## HTTP API
 
-```go
-cmd := exec.CommandContext(ctx, "python3", scriptPath,
-    "--input", imagePath, "--quality", quality, "--output-json")
+| Method and path | Purpose |
+|---|---|
+| `POST /api/upload` | Multipart form, field `image`. Returns an image ID and metadata. |
+| `POST /api/compress` | JSON `{"image_id", "quality", "chroma_subsampling"}`. Returns sizes, timings, PSNR, SSIM and result URLs. |
+| `POST /api/benchmark` | JSON `{"image_id", "quality"}`. Runs every available codec. |
+| `GET /api/download/{id}` | A stored result: the `.dct` file or the preview. |
+| `GET /api/export?id=&format=` | The result as `dct`, `jpeg` or `png`. |
+| `GET /api/formats` | Accepted input and output formats. |
+| `GET /health` | Liveness, version, and whether Python was found. |
+
+Example:
+
+```bash
+curl -F image=@photo.png localhost:8081/api/upload
+# {"id":"img_356633d5...","format":"png","width":1920,"height":1080,...}
+
+curl -X POST localhost:8081/api/compress \
+  -d '{"image_id":"img_356633d5...","quality":75,"chroma_subsampling":"4:2:0"}'
 ```
 
-The image is written to a temp PNG file, passed to the script, and the script returns a JSON result on stdout. Stderr is captured separately so Python tracebacks appear in the Go server logs rather than being silently swallowed.
+Input formats: PNG, JPEG, WebP, BMP, TIFF.
 
-Both Python scripts use `scikit-image` for PSNR/SSIM calculation and the deprecated `multichannel` kwarg has been removed (replaced with `channel_axis=2`) to avoid warnings that could corrupt JSON parsing.
-
-If Python is unavailable or a script fails, those results are simply omitted from the benchmark — the Go codecs always run.
-
----
+Limits: uploads up to 10 MB and 16 megapixels. Uploads and results are kept
+in memory for 30 minutes, with a cap on how many are held, and are addressed
+by random IDs. There is no authentication; this is a demo server, not a
+hosted service.
 
 ## Web UI
 
-The single-page app at `http://localhost:8081` provides:
+Served at the root URL:
 
-- **Drag-and-drop upload** with instant preview
-- **Quality slider** (1–100) and chroma subsampling selector
-- **Three-panel comparison**: original / difference heatmap / decompressed
-- **Difference heatmap**: per-pixel error amplified and colour-coded green→yellow→red, with adjustable amplification (1–20×)
-- **Metric cards**: file size, compression ratio, PSNR, SSIM, encode time — each with a progress bar and quality classification
-- **Image zoom**: click any panel image to open a fullscreen modal
-- **Benchmark table**: all four codecs with size bars, badges, hero stats strip, and insights panel
-- **Export**: download as DCT binary (exact compressed size), JPEG (re-encoded at original quality), or PNG
-- **Dark/light theme** toggle
-- **Keyboard shortcuts**: `Ctrl+U` upload, `Ctrl+Enter` compress, `Ctrl+S` download DCT
+- drag-and-drop upload, quality slider and subsampling selector
+- original, decoded and difference-heatmap views side by side
+- size, ratio, PSNR, SSIM and timing for each compression
+- benchmark table across all available codecs
+- export as `.dct`, JPEG or PNG
 
----
+Screenshots are in [Gallery/](Gallery/).
 
-## API Reference
+## Project layout
 
-Base URL: `http://localhost:8081`
+```
+cmd/server/            HTTP server
+cmd/dctpress/          command-line encoder, decoder and benchmark
+internal/core/dct/     transform, quantization, encoder, decoder, file format
+internal/core/huffman/ Huffman coder
+internal/core/metrics/ PSNR and SSIM
+internal/core/pixels/  fast pixel access shared by codec and metrics
+internal/handlers/     HTTP handlers and the in-memory stores
+internal/services/     compression and benchmark orchestration
+internal/python/       subprocess bridge and the Pillow / OpenCV scripts
+test/integration/      end-to-end API tests
+web/                   static single-page UI
+```
 
-### `POST /api/upload`
-
-Upload an image. Returns a session ID used by all subsequent endpoints.
+## Development
 
 ```bash
-curl -X POST http://localhost:8081/api/upload -F "image=@photo.jpg"
+make test         # all tests with coverage
+make test-race    # with the race detector
+make bench        # microbenchmarks
+make fuzz         # fuzz both decoders for 30 s each
+make lint         # golangci-lint
+make setup        # Go modules and the optional Python packages
 ```
 
-```json
-{ "id": "img_1", "format": "jpeg", "width": 1920, "height": 1080,
-  "size_bytes": 2097152, "color_mode": "RGB" }
-```
+## Design notes
 
-### `POST /api/compress`
+**Why separable DCT rather than a fast butterfly algorithm?** Two passes of
+an 8-point transform with a precomputed basis table are easy to verify
+against the definition (there is a test that does exactly that) and already
+about 190x faster than the direct formula. A scaled integer algorithm such
+as AAN would be faster again, at the cost of fixed-point care.
 
-Compress an uploaded image with DCTPress.
+**Why per-image Huffman trees?** They adapt to the image and need no
+built-in tables. The tree costs a few hundred bytes, which is negligible for
+photos and noticeable only for thumbnails.
 
-```bash
-curl -X POST http://localhost:8081/api/compress \
-  -H "Content-Type: application/json" \
-  -d '{"image_id":"img_1","quality":75,"chroma_subsampling":"4:2:0"}'
-```
+**Why not arithmetic coding?** It would save a further 5 to 10%, but a
+correct range coder is a project of its own.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `image_id` | string | required | ID from `/api/upload` |
-| `quality` | int | — | 1–100 |
-| `chroma_subsampling` | string | `"4:2:0"` | `"4:2:0"`, `"4:2:2"`, `"4:4:4"` |
+**Where the remaining time goes.** After the transform was parallelized,
+entropy coding and memory traffic dominate. The planes are held as float64,
+which is simple but uses eight bytes per sample.
 
-```json
-{
-  "export_id": "dl_1",
-  "compressed_image_url": "/api/download/dl_1",
-  "preview_url": "/api/download/dl_2",
-  "compressed_size": 85401,
-  "compression_ratio": 48.29,
-  "file_original_size": 2097152,
-  "file_ratio": 24.56,
-  "psnr": 33.77,
-  "ssim": 0.9924,
-  "encoding_time_ms": 179
-}
-```
+## Limitations
 
-### `POST /api/benchmark`
-
-Run all four codecs on an uploaded image and return comparison data.
-
-```bash
-curl -X POST http://localhost:8081/api/benchmark \
-  -H "Content-Type: application/json" \
-  -d '{"image_id":"img_1","quality":75}'
-```
-
-### `GET /api/export?id=<export_id>&format=<jpeg|png|dct>`
-
-Download the compressed image in the requested format.
-
-- `dct` — raw `.dct` binary (exact compressed size, no re-encoding overhead)
-- `jpeg` — decoded image re-encoded as JPEG at the original quality setting
-- `png` — decoded image encoded as lossless PNG
-
-```bash
-curl "http://localhost:8081/api/export?id=dl_1&format=dct" -o compressed.dct
-curl "http://localhost:8081/api/export?id=dl_1&format=jpeg" -o compressed.jpg
-```
-
-### `GET /api/download/<id>`
-
-Serve a raw stored blob (used internally for preview images).
-
-### `GET /api/formats`
-
-```json
-{ "input_formats": ["png","jpeg","webp","bmp","tiff"],
-  "output_formats": ["dct","jpeg","png"] }
-```
-
-### `GET /health`
-
-Liveness probe. Returns `200 OK`.
-
----
-
-## Makefile Reference
-
-| Target | Description |
-|---|---|
-| `make run` | `go run` the server on port 8081 |
-| `make restart` | Kill port 8081, rebuild binary, start server |
-| `make build` | Compile to `bin/server` |
-| `make build-prod` | Compile with `-ldflags="-s -w"` (stripped binary) |
-| `make test` | Full test suite with coverage |
-| `make test-race` | Tests with Go race detector |
-| `make benchmark` | Go microbenchmarks in `test/benchmarks/` |
-| `make coverage` | Coverage report, opens browser |
-| `make lint` | `golangci-lint run` |
-| `make format` | `gofmt -w -s .` |
-| `make setup` | `go mod tidy` + pip install Python deps |
-| `make clean` | Remove `bin/` and `tmp/` |
-| `make docker-up` | `docker compose up -d` |
-| `make docker-down` | `docker compose down` |
-| `make docker-logs` | Tail container logs |
-
----
-
-## Design Decisions
-
-### Why 8×8 blocks?
-
-8×8 is the JPEG standard block size. It maps well to CPU cache lines, the 8-point DCT has efficient butterfly implementations, and the ISO Annex K quantization tables are specifically calibrated for 8×8 blocks. Larger blocks (16×16, 32×32) give better energy compaction but produce more visible ringing artifacts at block boundaries when heavily quantized.
-
-### Why separable DCT instead of a butterfly algorithm?
-
-The separable two-pass approach is simpler to implement correctly and verify. A full butterfly (Arai-Agui-Nakajima or similar) would be faster but requires careful fixed-point arithmetic to avoid numerical drift. For a from-scratch implementation where correctness is the priority, separable + precomputed cosines gives a good balance: ~2.4× faster than naive, easy to unit-test against the direct formula.
-
-### Why per-image adaptive Huffman instead of static tables?
-
-Standard JPEG uses fixed Huffman tables derived from average image statistics. A per-image tree adapts to the actual coefficient distribution of each image. For images with unusual statistics (synthetic graphics, screenshots, medical images) this can give meaningfully better compression. The cost is that the tree must be stored in the file header — for small images this overhead dominates, but for anything above ~100×100 pixels the adaptive tree wins.
-
-### Why not arithmetic coding?
-
-Arithmetic coding (used in JPEG 2000, HEVC) achieves ~5–10% better entropy coding than Huffman. It was not used here because implementing a correct range coder with carry propagation and range normalization is significantly more complex, and the goal was to understand the codec pipeline rather than squeeze out the last few percent of compression.
-
-### Why not run-length AC encoding?
-
-Run-length encoding of AC coefficients (storing `(zeroRun, value)` pairs instead of individual values) was tested and made things worse: file size increased from ~97 KB to ~134 KB on a test image. The reason: the adaptive Huffman had already assigned a 1-bit code to zero (the most frequent symbol). Explicit run-length pairs eliminated that advantage and added extra symbols for non-sparse blocks. The EOB marker approach is simpler and more effective for this entropy coder.
-
-### Why Go instead of C++?
-
-C++ would be faster, but Go's escape analysis, goroutine model, and standard library made it the right trade-off for a single-author project. The hot path (DCT loops) runs at near-native speed. The concurrency model (worker pool via channels) is straightforward to reason about. The HTTP server and JSON handling are zero-dependency. The result is ~40 ms encode time for a 1080p image — fast enough for interactive use.
-
----
-
-## What Didn't Work
-
-**Aggressive deadzone quantization** — setting a deadzone of 0.64× the step size for high-frequency coefficients (u+v > 8) increased compression by ~2% but dropped PSNR by 0.26 dB. Not worth it.
-
-**Run-length AC encoding** — described above. The adaptive Huffman already handles sparse AC sequences efficiently via short codes for zero.
-
-**Naive DCT** — the first implementation used the direct O(n⁴) formula. Correct but slow: ~800 ms for a 1080p image. Switching to separable passes with precomputed cosines brought this to ~40 ms. Adding the parallel worker pool brought it to the current ~179 ms for a full encode+decode+metrics cycle.
-
----
-
-## Implementation Journey
-
-| Phase | Change | Encode time | File size |
-|---|---|---|---|
-| 1 | Naive 2D DCT, raw int32 output | ~800 ms | very large |
-| 2 | Separable DCT + precomputed cosines | ~40 ms | very large |
-| 3 | Huffman entropy coding | ~40 ms | −60% |
-| 4 | Bilinear chroma upsampling (decode) | ~40 ms | no change, +0.15 dB PSNR |
-| 5 | DC coefficient 20% tighter step | ~40 ms | +0.4 KB, +0.08 dB PSNR |
-| 6 | Parallel block processing (goroutines) | ~179 ms* | no change |
-
-*The current 179 ms includes encode + decode + PSNR + SSIM calculation. Encode alone is ~40 ms.
-
----
-
-## Future Roadmap
-
-- [ ] Progressive encoding — write low-frequency coefficients first for progressive JPEG-style loading
-- [ ] Arithmetic entropy coding — replace adaptive Huffman with a range coder for 5–10% better compression
-- [ ] SIMD acceleration — platform intrinsics for the DCT butterfly operations
-- [ ] Tiling for large images — process tiles in parallel goroutines to reduce peak memory on 4K+ inputs
-- [ ] pprof integration — expose `net/http/pprof` endpoints behind a build tag
-- [ ] WebP output — encode decoded `.dct` to WebP (requires a Go WebP encoder)
-
----
+- The `.dct` format is specific to this project.
+- Alpha is not stored. Transparent images are encoded with premultiplied
+  color and decode as opaque.
+- No progressive mode, no restart markers, no streaming: the whole image is
+  held in memory.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
----
+## Author
 
-<div align="center">
-Built from scratch by <strong>Shashank S</strong>
-</div>
+Shashank S ([@203SHASHANK](https://github.com/203SHASHANK))

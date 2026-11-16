@@ -43,7 +43,7 @@ func buildMultipartUpload(pngData []byte) (*bytes.Buffer, string) {
 	return body, writer.FormDataContentType()
 }
 
-// ── Upload endpoint ────────────────────────────────────────────────────────
+// Upload endpoint
 
 func TestUploadHandler_ValidPNG(t *testing.T) {
 	pngData := buildTestPNG(64, 64)
@@ -99,7 +99,7 @@ func TestUploadHandler_MissingFile(t *testing.T) {
 	}
 }
 
-// ── Compress endpoint ──────────────────────────────────────────────────────
+// Compress endpoint
 
 func TestCompressHandler_FullFlow(t *testing.T) {
 	// Step 1: upload.
@@ -184,7 +184,7 @@ func TestCompressHandler_UnknownImageID(t *testing.T) {
 	}
 }
 
-// ── Formats endpoint ───────────────────────────────────────────────────────
+// Formats endpoint
 
 func TestFormatsHandler(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/formats", nil)
@@ -204,7 +204,7 @@ func TestFormatsHandler(t *testing.T) {
 	}
 }
 
-// ── Download endpoint ──────────────────────────────────────────────────────
+// Download endpoint
 
 func TestDownloadHandler_AfterCompress(t *testing.T) {
 	// Upload an image.
@@ -264,7 +264,7 @@ func TestDownloadHandler_UnknownID(t *testing.T) {
 	}
 }
 
-// ── Benchmark endpoint ─────────────────────────────────────────────────────
+// Benchmark endpoint
 
 func TestBenchmarkHandler_FullFlow(t *testing.T) {
 	// Upload first.

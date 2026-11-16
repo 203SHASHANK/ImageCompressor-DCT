@@ -3,121 +3,93 @@ package metrics
 import (
 	"fmt"
 	"image"
-	"math"
 )
 
-// ssimWindowSize is the side length of the sliding window used in SSIM.
-const ssimWindowSize = 8
+const (
+	// ssimWindow is the side of the square window statistics are taken over,
+	// and ssimStep how far the window moves each time. A step of half the
+	// window makes neighbouring windows overlap.
+	ssimWindow = 8
+	ssimStep   = ssimWindow / 2
 
-// CalculateSSIM computes the Structural Similarity Index between two images.
-// SSIM ranges from 0 to 1, where 1 means identical images.
-// Values above 0.9 are generally acceptable; above 0.95 is excellent.
+	// Stabilizing constants from the SSIM paper (Wang et al., 2004):
+	// C1 = (0.01*L)^2 and C2 = (0.03*L)^2 for a dynamic range of L = 255.
+	// They keep the ratio defined in flat regions where the means or
+	// variances are close to zero.
+	ssimC1 = (0.01 * 255) * (0.01 * 255)
+	ssimC2 = (0.03 * 255) * (0.03 * 255)
+)
+
+// CalculateSSIM returns the mean structural similarity index of two images,
+// computed on brightness. 1 means identical; lower means less similar.
+//
+// Unlike PSNR, which treats every pixel error alike, SSIM compares local
+// mean, contrast and structure, which tracks perceived quality more closely.
+//
+// This is the uniform-window variant: 8x8 windows moved in steps of 4. The
+// reference implementation uses an 11x11 Gaussian window, so values from the
+// two are close but not interchangeable.
 func CalculateSSIM(original, compressed image.Image) (float64, error) {
-	if original.Bounds() != compressed.Bounds() {
-		return 0, fmt.Errorf("image dimensions mismatch: %v vs %v", original.Bounds(), compressed.Bounds())
+	a, b, err := comparable(original, compressed)
+	if err != nil {
+		return 0, err
+	}
+	width, height := a.Bounds().Dx(), a.Bounds().Dy()
+	if width < ssimWindow || height < ssimWindow {
+		return 0, fmt.Errorf("image too small for SSIM (minimum %dx%d)", ssimWindow, ssimWindow)
 	}
 
-	bounds := original.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
+	x, y := luminance(a), luminance(b)
 
-	if width < ssimWindowSize || height < ssimWindowSize {
-		return 0, fmt.Errorf("image too small for SSIM (minimum %dx%d)", ssimWindowSize, ssimWindowSize)
-	}
-
-	// Extract luminance (Y) channel as float64 for both images.
-	originalLuma := extractLuminance(original)
-	compressedLuma := extractLuminance(compressed)
-
-	// SSIM stability constants (standard values from Wang et al. 2004).
-	const k1 = 0.01
-	const k2 = 0.03
-	const dynamicRange = 255.0
-	c1 := (k1 * dynamicRange) * (k1 * dynamicRange)
-	c2 := (k2 * dynamicRange) * (k2 * dynamicRange)
-
-	ssimSum := 0.0
-	windowCount := 0
-
-	for row := 0; row <= height-ssimWindowSize; row += ssimWindowSize / 2 {
-		for col := 0; col <= width-ssimWindowSize; col += ssimWindowSize / 2 {
-			meanX, meanY, varX, varY, covarXY := windowStats(
-				originalLuma, compressedLuma, row, col, width, height,
-			)
-
-			numerator := (2*meanX*meanY + c1) * (2*covarXY + c2)
-			denominator := (meanX*meanX + meanY*meanY + c1) * (varX + varY + c2)
-
-			if denominator != 0 {
-				ssimSum += numerator / denominator
-				windowCount++
-			}
+	sum, windows := 0.0, 0
+	for top := 0; top+ssimWindow <= height; top += ssimStep {
+		for left := 0; left+ssimWindow <= width; left += ssimStep {
+			sum += windowSSIM(x, y, width, top, left)
+			windows++
 		}
 	}
-
-	if windowCount == 0 {
-		return 0, fmt.Errorf("no valid windows for SSIM calculation")
-	}
-
-	return ssimSum / float64(windowCount), nil
+	return sum / float64(windows), nil
 }
 
-// extractLuminance converts an image to a 2D float64 luminance (Y) plane.
-func extractLuminance(img image.Image) [][]float64 {
-	bounds := img.Bounds()
-	height := bounds.Dy()
-	width := bounds.Dx()
+// windowSSIM computes SSIM for one window of two luminance planes:
+//
+//	(2*meanX*meanY + C1) * (2*cov + C2)
+//	-------------------------------------------------
+//	(meanX^2 + meanY^2 + C1) * (varX + varY + C2)
+func windowSSIM(x, y []float64, width, top, left int) float64 {
+	const n = ssimWindow * ssimWindow
 
-	luma := make([][]float64, height)
-	for row := 0; row < height; row++ {
-		luma[row] = make([]float64, width)
-		for col := 0; col < width; col++ {
-			r, g, b, _ := img.At(bounds.Min.X+col, bounds.Min.Y+row).RGBA()
-			rf := float64(r >> 8)
-			gf := float64(g >> 8)
-			bf := float64(b >> 8)
-			luma[row][col] = 0.299*rf + 0.587*gf + 0.114*bf
+	// One pass collecting raw sums; variance and covariance follow from
+	// E[x^2] - E[x]^2 and E[xy] - E[x]E[y].
+	var sumX, sumY, sumXX, sumYY, sumXY float64
+	for r := top; r < top+ssimWindow; r++ {
+		rowX := x[r*width+left:][:ssimWindow]
+		rowY := y[r*width+left:][:ssimWindow]
+		for i, vx := range rowX {
+			vy := rowY[i]
+			sumX += vx
+			sumY += vy
+			sumXX += vx * vx
+			sumYY += vy * vy
+			sumXY += vx * vy
 		}
 	}
-	return luma
+
+	meanX, meanY := sumX/n, sumY/n
+	varX := sumXX/n - meanX*meanX
+	varY := sumYY/n - meanY*meanY
+	cov := sumXY/n - meanX*meanY
+
+	return ((2*meanX*meanY + ssimC1) * (2*cov + ssimC2)) /
+		((meanX*meanX + meanY*meanY + ssimC1) * (varX + varY + ssimC2))
 }
 
-// windowStats computes mean, variance, and covariance for an ssimWindowSize×ssimWindowSize
-// region starting at (startRow, startCol) in two luminance planes.
-func windowStats(planeX, planeY [][]float64, startRow, startCol, width, height int) (meanX, meanY, varX, varY, covarXY float64) {
-	count := 0.0
-
-	for row := startRow; row < startRow+ssimWindowSize && row < height; row++ {
-		for col := startCol; col < startCol+ssimWindowSize && col < width; col++ {
-			meanX += planeX[row][col]
-			meanY += planeY[row][col]
-			count++
-		}
+// luminance returns the brightness (BT.601 luma) of every pixel, row-major.
+func luminance(img *image.RGBA) []float64 {
+	out := make([]float64, len(img.Pix)/4)
+	for i := range out {
+		p := img.Pix[4*i:]
+		out[i] = 0.299*float64(p[0]) + 0.587*float64(p[1]) + 0.114*float64(p[2])
 	}
-
-	if count == 0 {
-		return
-	}
-
-	meanX /= count
-	meanY /= count
-
-	for row := startRow; row < startRow+ssimWindowSize && row < height; row++ {
-		for col := startCol; col < startCol+ssimWindowSize && col < width; col++ {
-			dx := planeX[row][col] - meanX
-			dy := planeY[row][col] - meanY
-			varX += dx * dx
-			varY += dy * dy
-			covarXY += dx * dy
-		}
-	}
-
-	varX /= count
-	varY /= count
-	covarXY /= count
-
-	return
+	return out
 }
-
-// ensure math is used
-var _ = math.Sqrt

@@ -1,61 +1,65 @@
-// Package metrics provides image quality measurement functions including
-// PSNR, SSIM, and MSE for evaluating compression fidelity.
+// Package metrics measures how closely a decoded image matches the original:
+// MSE and PSNR on the RGB channels, and SSIM on brightness.
 package metrics
 
 import (
 	"fmt"
 	"image"
 	"math"
+
+	"imagecompressor-dct/internal/core/pixels"
 )
 
-// CalculateMSE computes the Mean Squared Error between two images.
-// MSE measures average squared pixel difference across all channels.
-// Lower values indicate higher similarity.
+// CalculateMSE returns the mean squared error between two images of the same
+// size, averaged over every R, G and B sample. 0 means identical.
 func CalculateMSE(original, compressed image.Image) (float64, error) {
-	if original.Bounds() != compressed.Bounds() {
-		return 0, fmt.Errorf("image dimensions mismatch: %v vs %v", original.Bounds(), compressed.Bounds())
+	a, b, err := comparable(original, compressed)
+	if err != nil {
+		return 0, err
 	}
 
-	bounds := original.Bounds()
-	sumSquaredError := 0.0
-	pixelCount := 0
-
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r1, g1, b1, _ := original.At(x, y).RGBA()
-			r2, g2, b2, _ := compressed.At(x, y).RGBA()
-
-			// RGBA() returns values in [0, 65535]; shift to [0, 255].
-			rf1, gf1, bf1 := float64(r1>>8), float64(g1>>8), float64(b1>>8)
-			rf2, gf2, bf2 := float64(r2>>8), float64(g2>>8), float64(b2>>8)
-
-			sumSquaredError += math.Pow(rf1-rf2, 2) + math.Pow(gf1-gf2, 2) + math.Pow(bf1-bf2, 2)
-			pixelCount += 3
-		}
+	// Squared differences of 8-bit values are small integers, so the sum is
+	// exact in a uint64 and only converted to floating point at the end.
+	var sum uint64
+	for i := 0; i < len(a.Pix); i += 4 {
+		dr := int(a.Pix[i]) - int(b.Pix[i])
+		dg := int(a.Pix[i+1]) - int(b.Pix[i+1])
+		db := int(a.Pix[i+2]) - int(b.Pix[i+2])
+		sum += uint64(dr*dr + dg*dg + db*db)
 	}
-
-	if pixelCount == 0 {
-		return 0, fmt.Errorf("images have zero pixels")
-	}
-
-	return sumSquaredError / float64(pixelCount), nil
+	samples := len(a.Pix) / 4 * 3
+	return float64(sum) / float64(samples), nil
 }
 
-// CalculatePSNR computes the Peak Signal-to-Noise Ratio between two images.
-// PSNR is measured in decibels (dB); higher values indicate better quality.
-// Values above 30 dB are generally acceptable; above 40 dB is excellent.
-// Returns +Inf if the images are identical.
+// CalculatePSNR returns the peak signal-to-noise ratio in decibels:
+//
+//	PSNR = 10 * log10(255^2 / MSE)
+//
+// Higher is better. As a rough guide, lossy photo compression lands between
+// 30 and 40 dB, and each 6 dB halves the average error. Identical images
+// give +Inf.
 func CalculatePSNR(original, compressed image.Image) (float64, error) {
 	mse, err := CalculateMSE(original, compressed)
 	if err != nil {
-		return 0, fmt.Errorf("PSNR calculation failed: %w", err)
+		return 0, fmt.Errorf("PSNR: %w", err)
 	}
-
 	if mse == 0 {
 		return math.Inf(1), nil
 	}
+	const peak = 255.0
+	return 10 * math.Log10(peak*peak/mse), nil
+}
 
-	const maxPixelValue = 255.0
-	psnr := 10 * math.Log10((maxPixelValue * maxPixelValue) / mse)
-	return psnr, nil
+// comparable checks that two images have the same, non-zero size and returns
+// both in a directly indexable form.
+func comparable(original, compressed image.Image) (a, b *image.RGBA, err error) {
+	ob, cb := original.Bounds(), compressed.Bounds()
+	if ob.Dx() != cb.Dx() || ob.Dy() != cb.Dy() {
+		return nil, nil, fmt.Errorf("image dimensions mismatch: %dx%d vs %dx%d",
+			ob.Dx(), ob.Dy(), cb.Dx(), cb.Dy())
+	}
+	if ob.Dx() == 0 || ob.Dy() == 0 {
+		return nil, nil, fmt.Errorf("images have zero pixels")
+	}
+	return pixels.ToRGBA(original), pixels.ToRGBA(compressed), nil
 }

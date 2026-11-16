@@ -1,85 +1,88 @@
-// Package services contains business logic that orchestrates the compression pipeline.
 package services
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
+	"log"
+	"os"
+
 	"imagecompressor-dct/internal/core/dct"
 	"imagecompressor-dct/internal/models"
 	"imagecompressor-dct/internal/python"
-	"log"
-	"os"
 )
 
-// BenchmarkService coordinates compression benchmarks across all supported methods.
+// BenchmarkService runs the same image through every available codec.
 type BenchmarkService struct {
-	compressionService *CompressionService
-	pythonBridge       *python.Bridge
+	compression *CompressionService
+	bridge      *python.Bridge
 }
 
-// NewBenchmarkService creates a BenchmarkService with all available method runners.
+// NewBenchmarkService creates a BenchmarkService.
 func NewBenchmarkService() *BenchmarkService {
 	return &BenchmarkService{
-		compressionService: NewCompressionService(),
-		pythonBridge:       python.NewBridge(),
+		compression: NewCompressionService(),
+		bridge:      python.NewBridge(),
 	}
 }
 
-// RunAll compresses img with every available method at the given quality and
-// returns all results. Python-based methods are non-fatal: if Python is
-// unavailable or a script fails, those results are simply omitted.
-func (bs *BenchmarkService) RunAll(img image.Image, quality int) []models.BenchmarkResult {
+// RunAll compresses img with every codec at the given quality.
+//
+// All codecs are measured identically: size against uncompressed RGB, and
+// PSNR/SSIM computed by this program from each codec's own decoded output.
+// The Python encoders are optional: if the interpreter or a library is
+// missing, that row is logged and left out.
+func (bs *BenchmarkService) RunAll(ctx context.Context, img image.Image, quality int) []models.BenchmarkResult {
 	var results []models.BenchmarkResult
 
-	// 1. Custom DCT (Go)
 	if result, err := bs.runCustomDCT(img, quality); err == nil {
 		results = append(results, result)
 	} else {
-		log.Printf("Custom DCT benchmark failed: %v", err)
+		log.Printf("benchmark: DCTPress: %v", err)
 	}
 
-	// 2. Go stdlib JPEG
 	if result, err := CompressGoJPEG(img, quality); err == nil {
 		results = append(results, result)
 	} else {
-		log.Printf("Go JPEG benchmark failed: %v", err)
+		log.Printf("benchmark: Go stdlib JPEG: %v", err)
 	}
 
-	// 3 & 4. Python PIL + OpenCV (optional — skipped if Python is unavailable).
-	if bs.pythonBridge.IsAvailable() {
-		tempPath, cleanup, err := saveTempPNG(img)
-		if err != nil {
-			log.Printf("Failed to create temp PNG for Python benchmarks: %v", err)
-		} else {
-			defer cleanup()
+	if !bs.bridge.IsAvailable() {
+		return results
+	}
 
-			if result, err := bs.pythonBridge.RunPILBenchmark(tempPath, quality); err == nil {
-				results = append(results, result)
-			} else {
-				log.Printf("Python PIL benchmark failed: %v", err)
-			}
+	// The scripts read their input from disk. PNG is lossless, so they see
+	// exactly the pixels the Go encoders were given.
+	inputPath, cleanup, err := saveTempPNG(img)
+	if err != nil {
+		log.Printf("benchmark: %v", err)
+		return results
+	}
+	defer cleanup()
 
-			if result, err := bs.pythonBridge.RunOpenCVBenchmark(tempPath, quality); err == nil {
-				results = append(results, result)
-			} else {
-				log.Printf("Python OpenCV benchmark failed: %v", err)
-			}
+	for _, script := range []string{python.ScriptPIL, python.ScriptOpenCV} {
+		if ctx.Err() != nil {
+			break // the client went away; do not start more work
 		}
+		result, err := bs.runPython(ctx, script, inputPath, img, quality)
+		if err != nil {
+			log.Printf("benchmark: %v", err)
+			continue
+		}
+		results = append(results, result)
 	}
-
 	return results
 }
 
-// runCustomDCT compresses img with the custom DCT encoder and returns metrics.
 func (bs *BenchmarkService) runCustomDCT(img image.Image, quality int) (models.BenchmarkResult, error) {
-	response, err := bs.compressionService.Compress(CompressRequest{
+	response, err := bs.compression.Compress(CompressRequest{
 		Image:             img,
 		Quality:           quality,
-		ChromaSubsampling: dct.Subsampling420,
+		ChromaSubsampling: dct.Subsampling420, // what JPEG encoders use by default
 	})
 	if err != nil {
-		return models.BenchmarkResult{}, fmt.Errorf("custom DCT: %w", err)
+		return models.BenchmarkResult{}, err
 	}
 	return models.BenchmarkResult{
 		Method:           "DCTPress",
@@ -87,26 +90,52 @@ func (bs *BenchmarkService) runCustomDCT(img image.Image, quality int) (models.B
 		CompressedSize:   response.Result.CompressedSize,
 		CompressionRatio: response.Result.CompressionRatio,
 		EncodingTime:     response.EncodingTime,
+		DecodingTime:     response.DecodingTime,
 		PSNR:             response.PSNR,
 		SSIM:             response.SSIM,
 	}, nil
 }
 
-// saveTempPNG writes img to a temporary PNG file and returns the path along
-// with a cleanup function that deletes the file.
+func (bs *BenchmarkService) runPython(ctx context.Context, script, inputPath string, original image.Image, quality int) (models.BenchmarkResult, error) {
+	run, err := bs.bridge.Run(ctx, script, inputPath, quality)
+	if err != nil {
+		return models.BenchmarkResult{}, err
+	}
+	psnr, ssim, err := Quality(original, run.Decoded)
+	if err != nil {
+		return models.BenchmarkResult{}, fmt.Errorf("%s: %w", script, err)
+	}
+	return models.BenchmarkResult{
+		Method:           run.Method,
+		Language:         run.Language,
+		CompressedSize:   run.CompressedSize,
+		CompressionRatio: rawRatio(original, run.CompressedSize),
+		EncodingTime:     run.EncodingTime,
+		DecodingTime:     run.DecodingTime,
+		PSNR:             psnr,
+		SSIM:             ssim,
+	}, nil
+}
+
+// saveTempPNG writes img to a temporary PNG file and returns its path and a
+// function that removes it.
 func saveTempPNG(img image.Image) (path string, cleanup func(), err error) {
-	tempFile, err := os.CreateTemp("", "imgcomp_bench_*.png")
+	f, err := os.CreateTemp("", "imgcomp-bench-*.png")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temp file: %w", err)
 	}
+	remove := func() { os.Remove(f.Name()) }
 
-	if err := png.Encode(tempFile, img); err != nil {
-		tempFile.Close()
-		os.Remove(tempFile.Name())
-		return "", nil, fmt.Errorf("encode temp PNG: %w", err)
+	// Fast compression: the file is read once and deleted.
+	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
+	if err := encoder.Encode(f, img); err != nil {
+		f.Close()
+		remove()
+		return "", nil, fmt.Errorf("write temp PNG: %w", err)
 	}
-	tempFile.Close()
-
-	name := tempFile.Name()
-	return name, func() { os.Remove(name) }, nil
+	if err := f.Close(); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("write temp PNG: %w", err)
+	}
+	return f.Name(), remove, nil
 }

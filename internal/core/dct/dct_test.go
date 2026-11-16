@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// ── Transform tests ────────────────────────────────────────────────────────
+// Transform tests
 
 func TestForwardDCT2D_ZeroBlock(t *testing.T) {
 	var zeroBlock [8][8]float64
@@ -75,7 +75,7 @@ func TestForwardDCT2D_ConstantBlock(t *testing.T) {
 	}
 }
 
-// ── Encoder / Decoder round-trip ───────────────────────────────────────────
+// Encoder / Decoder round-trip
 
 func TestEncoderDecoder_RoundTrip(t *testing.T) {
 	img := createSolidColorImage(64, 64, color.RGBA{R: 200, G: 100, B: 50, A: 255})
@@ -146,7 +146,7 @@ func TestEncoder_ChromaSubsampling420(t *testing.T) {
 	}
 }
 
-// ── Benchmark ──────────────────────────────────────────────────────────────
+// Benchmark
 
 func BenchmarkForwardDCT2D(b *testing.B) {
 	var block [8][8]float64
@@ -172,7 +172,7 @@ func BenchmarkEncode1080p(b *testing.B) {
 	}
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// Helpers
 
 func createSolidColorImage(width, height int, c color.RGBA) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))

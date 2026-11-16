@@ -1,6 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-/* ── Animations ─────────────────────────────────────────────────────────── */
+/* Animations */
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -15,7 +15,7 @@
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── CSS Variables ──────────────────────────────────────────────────────── */
+/* CSS Variables */
 :root {
   --bg:            #060606;
   --bg2:           #0d0d0d;
@@ -50,7 +50,7 @@ body.light {
   --border-strong: rgba(0, 0, 0, .13);
 }
 
-/* ── Reset ──────────────────────────────────────────────────────────────── */
+/* Reset */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 
@@ -76,7 +76,7 @@ body::before {
   z-index: -1;
 }
 
-/* ── Loading Overlay ────────────────────────────────────────────────────── */
+/* Loading Overlay */
 #loading-overlay {
   display: none;
   position: fixed;
@@ -102,7 +102,7 @@ body::before {
 #loading-text  { color: var(--text); font-size: .88rem; font-weight: 500; letter-spacing: -.01em; }
 #loading-sub   { color: var(--text2); font-size: .76rem; }
 
-/* ── Header ─────────────────────────────────────────────────────────────── */
+/* Header */
 header {
   display: flex;
   justify-content: space-between;
@@ -143,7 +143,7 @@ header h1 .accent { color: var(--accent); }
   background: var(--bg4);
 }
 
-/* ── Main Layout ────────────────────────────────────────────────────────── */
+/* Main Layout */
 main {
   max-width: 1240px;
   margin: 0 auto;
@@ -158,7 +158,7 @@ main {
   gap: 1.25rem;
 }
 
-/* ── Card ───────────────────────────────────────────────────────────────── */
+/* Card */
 .card {
   background: var(--bg2);
   border: 1px solid var(--border);
@@ -174,7 +174,7 @@ main {
   letter-spacing: .1em;
 }
 
-/* ── Drop Zone ──────────────────────────────────────────────────────────── */
+/* Drop Zone */
 #drop-zone {
   border: 1px dashed rgba(255, 255, 255, .1);
   border-radius: var(--radius-sm);
@@ -190,7 +190,7 @@ main {
 #drop-zone p { color: var(--text2); margin: .3rem 0; font-size: .84rem; }
 #drop-zone input[type=file] { display: none; }
 
-/* ── Buttons ────────────────────────────────────────────────────────────── */
+/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -235,7 +235,7 @@ main {
 .btn-sm  { font-size: .74rem; padding: .27rem .65rem; }
 .btn-row { display: flex; gap: .5rem; margin-top: 1.25rem; }
 
-/* ── Settings Panel ─────────────────────────────────────────────────────── */
+/* Settings Panel */
 #settings-card label {
   display: block;
   margin: .9rem 0 .35rem;
@@ -278,7 +278,7 @@ main {
 }
 #settings-card select:focus { border-color: var(--accent); }
 
-/* ── Advanced Details ───────────────────────────────────────────────────── */
+/* Advanced Details */
 .advanced-details {
   margin-top: 1.1rem;
   padding-top: 1rem;
@@ -296,7 +296,7 @@ main {
 .advanced-body { padding-top: .9rem; display: flex; flex-direction: column; gap: .5rem; }
 .help-text { font-size: .72rem; color: var(--text2); line-height: 1.55; }
 
-/* ── Comparison Grid ────────────────────────────────────────────────────── */
+/* Comparison Grid */
 .comparison-grid { display: grid; gap: 1rem; }
 .three-col { grid-template-columns: 1fr 1fr 1fr; }
 
@@ -358,7 +358,7 @@ main {
 .yellow-dot { background: var(--c-acceptable); }
 .red-dot    { background: var(--c-poor); }
 
-/* ── Metric Cards ───────────────────────────────────────────────────────── */
+/* Metric Cards */
 .section-divider {
   height: 1px;
   background: var(--border);
@@ -419,7 +419,7 @@ main {
 .metric-label.acceptable { color: var(--c-acceptable); }
 .metric-label.poor       { color: var(--c-poor); }
 
-/* ── Download Section ───────────────────────────────────────────────────── */
+/* Download Section */
 .dl-section {
   margin-top: 1.5rem;
   padding-top: 1.25rem;
@@ -487,7 +487,7 @@ main {
   opacity: .8;
 }
 
-/* ── Benchmark Section ──────────────────────────────────────────────────── */
+/* Benchmark Section */
 .benchmark-header {
   display: flex;
   justify-content: space-between;
@@ -535,7 +535,7 @@ main {
 }
 .bm-hero-detail { font-size: .71rem; color: var(--text2); margin-top: .1rem; }
 
-/* ── Benchmark Table ────────────────────────────────────────────────────── */
+/* Benchmark Table */
 .table-wrapper { overflow-x: auto; margin-top: 1.25rem; }
 table { width: 100%; border-collapse: collapse; font-size: .82rem; }
 th {
@@ -605,7 +605,7 @@ td.poor       { color: var(--c-poor); }
 .tag-acceptable { color: var(--c-acceptable); }
 .tag-poor       { color: var(--c-poor); }
 
-/* ── Benchmark Insights ─────────────────────────────────────────────────── */
+/* Benchmark Insights */
 .bm-insights {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -647,7 +647,7 @@ td.poor       { color: var(--c-poor); }
 }
 .bench-summary strong { color: var(--accent); font-weight: 600; }
 
-/* ── Status & Progress ──────────────────────────────────────────────────── */
+/* Status & Progress */
 .status { font-size: .77rem; color: var(--text2); margin-top: .5rem; }
 
 #progress-container { margin-top: .9rem; }
@@ -667,7 +667,7 @@ td.poor       { color: var(--c-poor); }
 }
 #progress-text { font-size: .71rem; color: var(--text2); margin-top: .4rem; }
 
-/* ── Zoom Modal ─────────────────────────────────────────────────────────── */
+/* Zoom Modal */
 .zoom-modal {
   position: fixed;
   inset: 0;
@@ -688,7 +688,7 @@ td.poor       { color: var(--c-poor); }
   cursor: default;
 }
 
-/* ── Tooltips ───────────────────────────────────────────────────────────── */
+/* Tooltips */
 [data-tooltip] { position: relative; cursor: help; }
 [data-tooltip]::after {
   content: attr(data-tooltip);
@@ -710,14 +710,14 @@ td.poor       { color: var(--c-poor); }
 }
 [data-tooltip]:hover::after { opacity: 1; }
 
-/* ── SVG Icon Sizing ────────────────────────────────────────────────────── */
+/* SVG Icon Sizing */
 .dl-icon svg          { display: block; color: var(--accent); }
 .bm-hero-icon svg     { display: block; color: var(--text3); }
 .bm-insight-icon svg  { display: block; color: var(--text3); }
 .trophy svg           { width: 13px; height: 13px; vertical-align: middle; color: var(--c-acceptable); }
 .btn svg              { flex-shrink: 0; }
 
-/* ── Shortcuts Hint ─────────────────────────────────────────────────────── */
+/* Shortcuts Hint */
 #shortcuts-hint {
   text-align: center;
   padding: .6rem;
@@ -727,7 +727,7 @@ td.poor       { color: var(--c-poor); }
   letter-spacing: .04em;
 }
 
-/* ── Responsive ─────────────────────────────────────────────────────────── */
+/* Responsive */
 @media (max-width: 960px) {
   .three-col { grid-template-columns: 1fr 1fr; }
   .bm-hero   { grid-template-columns: 1fr 1fr; }

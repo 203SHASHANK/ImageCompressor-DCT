@@ -1,48 +1,44 @@
-# ── Stage 1: Build Go binary ──────────────────────────────────────────────────
+# Build stage: compile a static binary.
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
-# Fetch dependencies before copying source so this layer is cached
-# and only re-runs when go.mod / go.sum change.
+# Copy the module files first so the dependency download is cached until
+# go.mod or go.sum change.
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -X imagecompressor-dct/internal/handlers.Version=${VERSION}" \
     -trimpath \
     -o /build/imagecompressor \
-    ./cmd/server/main.go
+    ./cmd/server
 
-# ── Stage 2: Runtime image ────────────────────────────────────────────────────
+# Runtime stage: Python is here only for the Pillow and OpenCV benchmark rows.
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python benchmark deps.
-# Pinned for reproducibility; opencv-python-headless avoids GUI/X11 deps.
+# opencv-python-headless avoids pulling in GUI libraries.
 RUN pip install --no-cache-dir \
     pillow==10.4.0 \
     opencv-python-headless==4.9.0.80 \
-    scikit-image==0.22.0 \
     numpy==1.26.4
 
-# Copy statically-linked Go binary and runtime assets from the builder stage.
 COPY --from=builder /build/imagecompressor ./
-COPY web/                             ./web/
-COPY internal/python/scripts/         ./internal/python/scripts/
+COPY web/ ./web/
+COPY internal/python/scripts/ ./internal/python/scripts/
 
-# Run as non-root for container security.
+# Do not run as root.
 RUN adduser --disabled-password --gecos '' appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8080
 
-# HEALTHCHECK uses the /health endpoint added to the server.
-# --start-period gives Python a moment to warm up on first benchmark call.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python3 -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" \

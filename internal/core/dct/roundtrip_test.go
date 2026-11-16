@@ -70,7 +70,7 @@ func TestRoundTrip_Gradient(t *testing.T) {
 		t.Fatal(err)
 	}
 	psnr := pixelPSNR(img, decoded)
-	t.Logf("Q75 4:2:0 gradient 64×64: PSNR=%.2f dB  compressed=%d bytes", psnr, result.CompressedSize)
+	t.Logf("Q75 4:2:0 gradient 64x64: PSNR=%.2f dB  compressed=%d bytes", psnr, result.CompressedSize)
 	if psnr < 35 {
 		t.Errorf("PSNR %.2f dB too low for gradient image", psnr)
 	}
@@ -89,7 +89,7 @@ func TestRoundTrip_Sinusoidal(t *testing.T) {
 			continue
 		}
 		psnr := pixelPSNR(img, decoded)
-		t.Logf("Q%d sinusoidal 320×240: PSNR=%.2f dB  %d→%d bytes (%.1fx)",
+		t.Logf("Q%d sinusoidal 320x240: PSNR=%.2f dB  %d -> %d bytes (%.1fx)",
 			q, psnr, rawSize, result.CompressedSize, float64(rawSize)/float64(result.CompressedSize))
 		if psnr < 28 {
 			t.Errorf("Q%d: PSNR %.2f dB too low for sinusoidal image", q, psnr)
@@ -104,7 +104,7 @@ func TestRoundTrip_EOBEdgeCase(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	for y := 0; y < 16; y++ {
 		for x := 0; x < 16; x++ {
-			v := uint8(((x+1)*(y+1)*7) % 256)
+			v := uint8(((x + 1) * (y + 1) * 7) % 256)
 			img.SetRGBA(x, y, color.RGBA{R: v, G: 255 - v, B: v / 2, A: 255})
 		}
 	}
@@ -115,8 +115,8 @@ func TestRoundTrip_EOBEdgeCase(t *testing.T) {
 		t.Fatalf("decode error: %v", err)
 	}
 	psnr := pixelPSNR(img, decoded)
-	t.Logf("Q100 16×16 high-freq: PSNR=%.2f dB", psnr)
+	t.Logf("Q100 16x16 high-freq: PSNR=%.2f dB", psnr)
 	if psnr < 40 {
-		t.Errorf("Q100 round-trip PSNR too low: %.2f dB — EOB alignment broken?", psnr)
+		t.Errorf("Q100 round-trip PSNR too low: %.2f dB (end-of-block handling broken?)", psnr)
 	}
 }
